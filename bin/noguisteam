@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+source "$PROJECT_ROOT/lib/env.sh"
+source "$PROJECT_ROOT/lib/db.sh"
+source "$PROJECT_ROOT/lib/manifest.sh"
+source "$PROJECT_ROOT/lib/install.sh"
+source "$PROJECT_ROOT/lib/ui.sh"
+
+result=$(run_ui) || exit 0
+
+IFS="|" read -r action name appid <<< "$result"
+
+case "$action" in
+    I) install_game "$name" "$appid" ;;
+    U) uninstall_game "$name" "$appid" ;;
+    L) steam "steam://run/$appid" ;;
+    P) get_game_info "$appid" ;;
+    *)
+        echo "Unknown action."
+        ;;
+esac
+
