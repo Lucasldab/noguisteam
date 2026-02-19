@@ -22,10 +22,41 @@ Install, uninstall, play, and update your Steam library directly from the comman
 * Git
 * Python 3 (for library sync)
 * Bash shell
+* [fzf](https://github.com/junegunn/fzf) (for interactive TUI)
+
+---
+Absolutely — the README is the first place someone sees how to get your project running. If your project now has an installation script (especially since it handles dependencies like `fzf`), you should definitely **document it clearly**.
+
+You could add a section like this in your README:
 
 ---
 
-## Installation
+## Installation Script
+
+This project includes an installation script that sets up required dependencies and prepares the environment.
+
+```bash
+# Make the script executable if not already
+chmod +x bin/install.sh
+
+# Run the installation
+./bin/install.sh
+```
+
+**What it does:**
+
+* Checks and installs required dependencies (like `fzf`)
+* Sets up necessary directories and database
+* Prepares the environment so the main script (`noguisteam`) can run
+
+After running the installation script, you can run the main program:
+
+```bash
+./bin/noguisteam
+```
+---
+
+## Manual Installation
 
 Clone the repository:
 
