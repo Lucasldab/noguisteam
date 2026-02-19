@@ -3,6 +3,8 @@
 A lightweight terminal-based tool for managing your Steam games using **SteamCMD**.
 Install, uninstall, play, and update your Steam library directly from the command line with a simple TUI (Text User Interface).
 
+**Note:** Steam must be installed; this tool complements the Steam client and does not replace it.
+
 ---
 
 ## Features
