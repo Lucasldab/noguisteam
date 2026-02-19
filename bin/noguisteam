@@ -16,8 +16,16 @@ IFS="|" read -r action name appid <<< "$result"
 case "$action" in
     I) install_game "$name" "$appid" ;;
     U) uninstall_game "$name" "$appid" ;;
-    L) steam "steam://run/$appid" ;;
-    P) get_game_info "$appid" ;;
+    P)
+        if ! pgrep -x steam >/dev/null; then
+            steam -silent >/dev/null 2>&1 &
+            sleep 3
+        fi
+        steam "steam://run/$appid" >/dev/null 2>&1 & disown
+        ;;
+    L)
+        python3 "$PROJECT_ROOT/sync.py"
+        ;;
     *)
         echo "Unknown action."
         ;;

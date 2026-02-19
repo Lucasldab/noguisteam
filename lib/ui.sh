@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
 # ui.sh
-# Handles all TUI / fzf interactions
 
 set -euo pipefail
 
-############################################
-# Render preview for selected game
-############################################
 preview_game() {
     local appid="$1"
 
-    # Ensure it's numeric (safety)
     [[ "$appid" =~ ^[0-9]+$ ]] || exit 0
 
     echo "| Name                           | Playtime   | Last Played          | Status"
@@ -36,9 +31,6 @@ preview_game() {
 export -f preview_game
 export DB
 
-############################################
-# Launch fzf selection UI
-############################################
 select_game_ui() {
 
     local selection
@@ -49,7 +41,7 @@ select_game_ui() {
             --ansi \
             --expect=I,U,L,P \
             --prompt="Select a game > " \
-            --header="I=Install | U=Uninstall | L=Launch | P=Info" \
+            --header="I=Install | U=Uninstall | P=Play | L=Update Library" \
             --preview "bash $(realpath "$0") preview \$(echo {} | awk -F'|' '{print \$2}')"\
             --preview-window=up:7:wrap
     )
@@ -61,9 +53,6 @@ select_game_ui() {
     parse_selection "$selection"
 }
 
-############################################
-# Parse fzf selection result
-############################################
 parse_selection() {
     local raw="$1"
 
@@ -81,9 +70,6 @@ parse_selection() {
     echo "$key|$name|$appid"
 }
 
-############################################
-# High-level UI entrypoint
-############################################
 run_ui() {
     local result
 
@@ -95,9 +81,6 @@ run_ui() {
     echo "$result"
 }
 
-############################################
-# CLI dispatch (for fzf preview)
-############################################
 if [[ "${1:-}" == "preview" ]]; then
     preview_game "$2"
     exit 0

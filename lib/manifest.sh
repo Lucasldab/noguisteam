@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 # manifest.sh
-# Handles Steam appmanifest generation and Steam client sync
 
 set -euo pipefail
 
-############################################
-# Create an appmanifest file
-############################################
 create_manifest() {
     local appid="$1"
     local installdir="$2"
@@ -51,9 +47,6 @@ EOF
     echo "✅ Manifest written to: $acf"
 }
 
-############################################
-# Check if manifest exists
-############################################
 manifest_exists() {
     local appid="$1"
     local acf="$STEAMLIB/appmanifest_${appid}.acf"
@@ -61,9 +54,6 @@ manifest_exists() {
     [[ -f "$acf" ]]
 }
 
-############################################
-# Gracefully restart Steam client
-############################################
 restart_steam() {
     echo "Refreshing Steam client..."
 
@@ -73,16 +63,12 @@ restart_steam() {
         sleep 2
     fi
 
-    # Relaunch silently
     steam -silent &
     disown
 
     echo "Steam restarted."
 }
 
-############################################
-# Ensure Steam recognizes the installation
-############################################
 ensure_manifest() {
     local appid="$1"
     local installdir="$2"

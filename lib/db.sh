@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 # db.sh
-# Handles all database operations
 
 set -euo pipefail
 
-############################################
-# Ensure DB exists
-############################################
 check_db() {
     if [[ ! -f "$DB" ]]; then
         echo "❌ Database not found at $DB"
@@ -14,9 +10,6 @@ check_db() {
     fi
 }
 
-############################################
-# Mark game as installed
-############################################
 mark_installed() {
     local appid="$1"
 
@@ -24,9 +17,6 @@ mark_installed() {
         "UPDATE games SET installed=1 WHERE appid=$appid;"
 }
 
-############################################
-# Mark game as uninstalled
-############################################
 mark_uninstalled() {
     local appid="$1"
 
@@ -34,9 +24,6 @@ mark_uninstalled() {
         "UPDATE games SET installed=0 WHERE appid=$appid;"
 }
 
-############################################
-# Get game info (single record)
-############################################
 get_game_info() {
     local appid="$1"
 
@@ -54,9 +41,6 @@ get_game_info() {
     "
 }
 
-############################################
-# List games for UI selection
-############################################
 list_games_for_selection() {
     sqlite3 "$DB" "
         SELECT name || ' [' ||
@@ -69,8 +53,5 @@ list_games_for_selection() {
     "
 }
 
-############################################
-# Initialize DB immediately
-############################################
 check_db
 

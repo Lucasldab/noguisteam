@@ -26,13 +26,11 @@ response.raise_for_status()
 
 games = response.json()["response"].get("games", [])
 
-# Optional: detect installed games
 steamapps_path = os.path.expanduser("~/.steam/steam/steamapps/")
 
 conn = sqlite3.connect("steam_games.db")
 c = conn.cursor()
 
-# Make sure table exists
 c.execute("""
 CREATE TABLE IF NOT EXISTS games (
     appid INTEGER PRIMARY KEY,
@@ -43,13 +41,11 @@ CREATE TABLE IF NOT EXISTS games (
 )
 """)
 
-# Insert or update games
 for g in games:
     appid = g["appid"]
     last_played = g.get("rtime_last_played", 0)
     installed = 1 if os.path.exists(os.path.join(steamapps_path, f"appmanifest_{appid}.acf")) else 0
 
-    # Use INSERT OR REPLACE to update existing entries or add new ones
     c.execute("""
     INSERT OR REPLACE INTO games (appid, name, playtime_forever, last_played, installed)
     VALUES (?, ?, ?, ?, ?)
