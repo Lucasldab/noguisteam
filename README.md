@@ -1,7 +1,6 @@
 # No GUI Steam
-
 A lightweight terminal-based tool for managing your Steam games using **SteamCMD**.
-Install, uninstall, play, and update your Steam library directly from the command line with a simple TUI (Text User Interface).
+Install, uninstall, play, update your Steam library, and check wishlisted sales directly from the command line with a simple TUI (Text User Interface).
 
 **Note:** Steam must be installed; this tool complements the Steam client and does not replace it.
 
@@ -12,7 +11,8 @@ Install, uninstall, play, and update your Steam library directly from the comman
 * Install and uninstall Steam games without the Steam GUI.
 * Play games directly from the terminal.
 * Keep your Steam library in sync with a local database.
-* Supports environment-based configuration for Steam credentials and API key.
+* Check your Steam wishlist for active sales, sorted by deal quality, discount, or price.
+* Supports environment-based configuration for Steam credentials and API keys.
 * Simple, clean, and scriptable for automation.
 
 ---
@@ -22,43 +22,13 @@ Install, uninstall, play, and update your Steam library directly from the comman
 * Linux or macOS
 * [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD)
 * Git
-* Python 3 (for library sync)
+* Python 3 (for library sync and wishlist)
 * Bash shell
 * [fzf](https://github.com/junegunn/fzf) (for interactive TUI)
 
 ---
-Absolutely — the README is the first place someone sees how to get your project running. If your project now has an installation script (especially since it handles dependencies like `fzf`), you should definitely **document it clearly**.
 
-You could add a section like this in your README:
-
----
-
-## Installation Script
-
-This project includes an installation script that sets up required dependencies and prepares the environment.
-
-```bash
-# Make the script executable if not already
-chmod +x bin/install.sh
-
-# Run the installation
-./bin/install.sh
-```
-
-**What it does:**
-
-* Checks and installs required dependencies (like `fzf`)
-* Sets up necessary directories and database
-* Prepares the environment so the main script (`noguisteam`) can run
-
-After running the installation script, you can run the main program:
-
-```bash
-./bin/noguisteam
-```
----
-
-## Manual Installation
+## Installation
 
 Clone the repository:
 
@@ -85,9 +55,13 @@ Edit `.env` with your credentials:
 STEAM_API_KEY=your_steam_api_key
 STEAM_ID=your_steam_id
 STEAM_USERNAME=your_steam_username
+ITAD_KEY=your_itad_api_key
+COUNTRY=BR
 ```
 
 > **Note:** Never commit your `.env` file with real credentials. Use `.env.example` as a template.
+>
+> `ITAD_KEY` is required for wishlist sale checking. Get one free at [isthereanydeal.com](https://isthereanydeal.com/apps/my/). `COUNTRY` controls regional pricing (e.g. `US` for US Dollar, `DE` for Euro, `GB` for British Pound).
 
 ---
 
@@ -105,6 +79,13 @@ Actions in the TUI:
 * **U** – Uninstall a game
 * **P** – Play a game
 * **L** – Update library (sync with Steam)
+* **W** – Check wishlisted sales
+
+When pressing **W**, you will be prompted to choose a sort order for the results:
+
+* **Best Deal** – highlights historical and all-time lows first
+* **Highest Discount %** – biggest discounts at the top
+* **Lowest Price** – cheapest games first
 
 ---
 
@@ -117,6 +98,7 @@ The project is modular:
 * `lib/install.sh` — install/uninstall logic
 * `lib/manifest.sh` — Steam manifest handling
 * `lib/sync.py` — library synchronization
+* `lib/wishlist.py` — wishlist sale checker (requires `ITAD_KEY` and `COUNTRY`)
 * `lib/ui.sh` — terminal user interface
 
 ---
@@ -134,4 +116,3 @@ The project is modular:
 ## License
 
 This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
-

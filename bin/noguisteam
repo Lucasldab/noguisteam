@@ -24,8 +24,23 @@ case "$action" in
         steam "steam://run/$appid" >/dev/null 2>&1 & disown
         ;;
     L)
-        python3 "$PROJECT_ROOT/sync.py"
+        python3 "$PROJECT_ROOT/lib/sync.py"
         ;;
+    W)
+    sort=$(printf "deal|Best Deal (default)\ndiscount|Highest Discount %%\nprice|Lowest Price" \
+        | fzf \
+            --ansi \
+            --prompt="Sort wishlist by > " \
+            --header="Select sort order for wishlisted sales" \
+            --delimiter="|" \
+            --with-nth=2 \
+            --height=6 \
+            --reverse \
+        | awk -F'|' '{print $1}')
+    [[ -z "$sort" ]] && exit 0
+    echo "Running wishlist..."
+    python3 "$PROJECT_ROOT/lib/wishlist.py" --sort "$sort"
+    ;;
     *)
         echo "Unknown action."
         ;;

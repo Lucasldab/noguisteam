@@ -39,9 +39,9 @@ select_game_ui() {
         list_games_for_selection \
         | fzf \
             --ansi \
-            --expect=I,U,L,P \
+            --expect=I,U,P,L,W \
             --prompt="Select a game > " \
-            --header="I=Install | U=Uninstall | P=Play | L=Update Library" \
+            --header="I=Install | U=Uninstall | P=Play | L=Update Library | W=Wishlisted Sales" \
             --preview "bash $(realpath "$0") preview \$(echo {} | awk -F'|' '{print \$2}')"\
             --preview-window=up:7:wrap
     )
