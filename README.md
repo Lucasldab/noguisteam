@@ -116,3 +116,9 @@ The project is modular:
 ## License
 
 This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
+
+---
+
+## Disclaimer
+
+This project is not affiliated with, endorsed by, or associated with Valve Corporation or Steam. All trademarks are the property of their respective owners.
