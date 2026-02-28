@@ -24,10 +24,11 @@ use std::{
 };
 
 fn main() -> anyhow::Result<()> {
-    dotenv::dotenv().ok();
-    let config = steam::SteamConfig::from_env()?;
-
+    // Resolve project root FIRST, then load .env from it.
+    // dotenv::dotenv() loads from CWD which is wrong when run from ~.
     let project_root = project_root();
+    dotenv::from_path(project_root.join(".env")).ok();
+    let config = steam::SteamConfig::from_env()?;
     let db_path      = project_root.join("steam_games.db");
     let db           = Database::open(&db_path)?;
 
@@ -307,15 +308,10 @@ fn deal_order(tag: &str) -> u8 {
 // Helpers
 // ─────────────────────────────────────────────
 fn project_root() -> PathBuf {
-    if let Ok(p) = std::env::var("NOGUISTEAM_HOME") {
-        return PathBuf::from(p);
-    }
-    // fallback: walk up from binary
-    let exe = std::fs::canonicalize(std::env::current_exe().unwrap_or_default())
-        .unwrap_or_default();
+    let exe = std::env::current_exe().unwrap_or_default();
     let mut dir = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-    for _ in 0..6 {
-        if dir.join(".env").exists() || dir.join("steam_games.db").exists() {
+    for _ in 0..4 {
+        if dir.join("steam_games.db").exists() || dir.join(".env").exists() {
             return dir;
         }
         if let Some(p) = dir.parent() { dir = p.to_path_buf(); } else { break; }
