@@ -1,0 +1,225 @@
+// config.rs — User configuration (colors + keybinds)
+// Loaded from ~/.config/noguisteam/config.toml
+// All fields are optional — missing values fall back to defaults.
+
+use anyhow::Result;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+// ─────────────────────────────────────────────
+// Top-level config
+// ─────────────────────────────────────────────
+#[derive(Debug, Deserialize, Default)]
+pub struct Config {
+    #[serde(default)]
+    pub colors:   ColorConfig,
+    #[serde(default)]
+    pub keybinds: KeybindConfig,
+}
+
+// ─────────────────────────────────────────────
+// Colors
+// ─────────────────────────────────────────────
+#[derive(Debug, Deserialize)]
+pub struct ColorConfig {
+    /// Active tab / selection highlight
+    pub accent:    Option<String>,
+    /// Installed game indicator
+    pub installed: Option<String>,
+    /// Error / uninstalled indicator
+    pub error:     Option<String>,
+    /// Warning / discount color
+    pub warn:      Option<String>,
+    /// Dimmed text
+    pub dim:       Option<String>,
+}
+
+impl Default for ColorConfig {
+    fn default() -> Self {
+        Self {
+            accent:    Some("cyan".into()),
+            installed: Some("green".into()),
+            error:     Some("red".into()),
+            warn:      Some("yellow".into()),
+            dim:       Some("dark_gray".into()),
+        }
+    }
+}
+
+impl ColorConfig {
+    pub fn accent(&self)    -> ratatui::style::Color { parse_color(self.accent.as_deref(),    "cyan") }
+    pub fn installed(&self) -> ratatui::style::Color { parse_color(self.installed.as_deref(), "green") }
+    pub fn error(&self)     -> ratatui::style::Color { parse_color(self.error.as_deref(),     "red") }
+    pub fn warn(&self)      -> ratatui::style::Color { parse_color(self.warn.as_deref(),      "yellow") }
+    pub fn dim(&self)       -> ratatui::style::Color { parse_color(self.dim.as_deref(),       "dark_gray") }
+}
+
+fn parse_color(s: Option<&str>, default: &str) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    let s = s.unwrap_or(default).to_lowercase();
+
+    // Try #rrggbb hex first
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&hex[0..2], 16),
+                u8::from_str_radix(&hex[2..4], 16),
+                u8::from_str_radix(&hex[4..6], 16),
+            ) {
+                return Color::Rgb(r, g, b);
+            }
+        }
+    }
+
+    // Named colors
+    match s.as_str() {
+        "black"        => Color::Black,
+        "red"          => Color::Red,
+        "green"        => Color::Green,
+        "yellow"       => Color::Yellow,
+        "blue"         => Color::Blue,
+        "magenta"      => Color::Magenta,
+        "cyan"         => Color::Cyan,
+        "white"        => Color::White,
+        "dark_gray"    => Color::DarkGray,
+        "light_red"    => Color::LightRed,
+        "light_green"  => Color::LightGreen,
+        "light_yellow" => Color::LightYellow,
+        "light_blue"   => Color::LightBlue,
+        "light_magenta"=> Color::LightMagenta,
+        "light_cyan"   => Color::LightCyan,
+        "gray"         => Color::Gray,
+        _              => Color::Reset,
+    }
+}
+
+// ─────────────────────────────────────────────
+// Keybinds
+// ─────────────────────────────────────────────
+#[derive(Debug, Deserialize)]
+pub struct KeybindConfig {
+    pub up:              Option<String>,
+    pub down:            Option<String>,
+    pub install:         Option<String>,
+    pub uninstall:       Option<String>,
+    pub play:            Option<String>,
+    pub sync:            Option<String>,
+    pub search:          Option<String>,
+    pub wishlist_fetch:  Option<String>,
+    pub wishlist_sort:   Option<String>,
+    pub next_tab:        Option<String>,
+    pub quit:            Option<String>,
+}
+
+impl Default for KeybindConfig {
+    fn default() -> Self {
+        Self {
+            up:             Some("k".into()),
+            down:           Some("j".into()),
+            install:        Some("i".into()),
+            uninstall:      Some("u".into()),
+            play:           Some("p".into()),
+            sync:           Some("l".into()),
+            search:         Some("/".into()),
+            wishlist_fetch: Some("r".into()),
+            wishlist_sort:  Some("s".into()),
+            next_tab:       Some("tab".into()),
+            quit:           Some("q".into()),
+        }
+    }
+}
+
+impl KeybindConfig {
+    /// Returns the first char of a keybind string, lowercased.
+    pub fn key(&self, field: Option<&String>, default: char) -> char {
+        field
+            .and_then(|s| s.chars().next())
+            .map(|c| c.to_lowercase().next().unwrap_or(c))
+            .unwrap_or(default)
+    }
+
+    pub fn up(&self)             -> char { self.key(self.up.as_ref(),             'k') }
+    pub fn down(&self)           -> char { self.key(self.down.as_ref(),           'j') }
+    pub fn install(&self)        -> char { self.key(self.install.as_ref(),        'i') }
+    pub fn uninstall(&self)      -> char { self.key(self.uninstall.as_ref(),      'u') }
+    pub fn play(&self)           -> char { self.key(self.play.as_ref(),           'p') }
+    pub fn sync(&self)           -> char { self.key(self.sync.as_ref(),           'l') }
+    pub fn search(&self)         -> char { self.key(self.search.as_ref(),         '/') }
+    pub fn wishlist_fetch(&self) -> char { self.key(self.wishlist_fetch.as_ref(), 'r') }
+    pub fn wishlist_sort(&self)  -> char { self.key(self.wishlist_sort.as_ref(),  's') }
+    pub fn quit(&self)           -> char { self.key(self.quit.as_ref(),           'q') }
+}
+
+// ─────────────────────────────────────────────
+// Load / create default
+// ─────────────────────────────────────────────
+pub fn load() -> Config {
+    match try_load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Warning: could not load config: {e}. Using defaults.");
+            Config::default()
+        }
+    }
+}
+
+fn config_path() -> PathBuf {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config")
+        });
+    base.join("noguisteam").join("config.toml")
+}
+
+fn try_load() -> Result<Config> {
+    let path = config_path();
+
+    if !path.exists() {
+        // Write out a commented default config so users have a reference
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, DEFAULT_CONFIG)?;
+        return Ok(Config::default());
+    }
+
+    let text = std::fs::read_to_string(&path)?;
+    let cfg: Config = toml::from_str(&text)?;
+    Ok(cfg)
+}
+
+// ─────────────────────────────────────────────
+// Default config file written on first run
+// ─────────────────────────────────────────────
+const DEFAULT_CONFIG: &str = r#"# noguisteam config
+# Location: ~/.config/noguisteam/config.toml
+# Changes take effect on next launch.
+
+[colors]
+# Named colors: black, red, green, yellow, blue, magenta, cyan, white,
+#               gray, dark_gray, light_red, light_green, light_yellow,
+#               light_blue, light_magenta, light_cyan
+# Hex colors:   #rrggbb  (e.g. "#1e88e5")
+
+accent    = "cyan"      # selected item, tab highlight, prompt
+installed = "green"     # installed game indicator
+error     = "red"       # errors, uninstall warnings
+warn      = "yellow"    # discounts, warnings
+dim       = "dark_gray" # secondary text, borders
+
+[keybinds]
+# Single character keys only (arrows always work regardless of these settings)
+
+up            = "k"   # move up in list
+down          = "j"   # move down in list
+install       = "i"   # install selected game
+uninstall     = "u"   # uninstall selected game
+play          = "p"   # launch selected game
+sync          = "l"   # sync library from Steam API
+search        = "/"   # open search filter
+wishlist_fetch = "r"  # fetch wishlist sales
+wishlist_sort  = "s"  # cycle sort order
+quit          = "q"   # quit
+"#;
