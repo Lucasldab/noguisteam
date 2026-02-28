@@ -307,10 +307,15 @@ fn deal_order(tag: &str) -> u8 {
 // Helpers
 // ─────────────────────────────────────────────
 fn project_root() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_default();
+    if let Ok(p) = std::env::var("NOGUISTEAM_HOME") {
+        return PathBuf::from(p);
+    }
+    // fallback: walk up from binary
+    let exe = std::fs::canonicalize(std::env::current_exe().unwrap_or_default())
+        .unwrap_or_default();
     let mut dir = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-    for _ in 0..4 {
-        if dir.join("steam_games.db").exists() || dir.join(".env").exists() {
+    for _ in 0..6 {
+        if dir.join(".env").exists() || dir.join("steam_games.db").exists() {
             return dir;
         }
         if let Some(p) = dir.parent() { dir = p.to_path_buf(); } else { break; }

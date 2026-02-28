@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# bin/noguisteam
-
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,4 +9,5 @@ if [[ ! -f "$BINARY" ]]; then
     cd "$PROJECT_ROOT" && cargo build --release
 fi
 
+export NOGUISTEAM_HOME="$PROJECT_ROOT"
 exec "$BINARY"
