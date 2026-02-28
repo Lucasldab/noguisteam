@@ -1,48 +1,14 @@
 #!/usr/bin/env bash
+# bin/noguisteam
+
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BINARY="$PROJECT_ROOT/target/release/noguisteam"
 
-source "$PROJECT_ROOT/lib/env.sh"
-source "$PROJECT_ROOT/lib/db.sh"
-source "$PROJECT_ROOT/lib/manifest.sh"
-source "$PROJECT_ROOT/lib/install.sh"
-source "$PROJECT_ROOT/lib/ui.sh"
+if [[ ! -f "$BINARY" ]]; then
+    echo "Binary not found. Building..."
+    cd "$PROJECT_ROOT" && cargo build --release
+fi
 
-result=$(run_ui) || exit 0
-
-IFS="|" read -r action name appid <<< "$result"
-
-case "$action" in
-    I) install_game "$name" "$appid" ;;
-    U) uninstall_game "$name" "$appid" ;;
-    P)
-        if ! pgrep -x steam >/dev/null; then
-            steam -silent >/dev/null 2>&1 &
-            sleep 3
-        fi
-        steam "steam://run/$appid" >/dev/null 2>&1 & disown
-        ;;
-    L)
-        python3 "$PROJECT_ROOT/lib/sync.py"
-        ;;
-    W)
-    sort=$(printf "deal|Best Deal (default)\ndiscount|Highest Discount %%\nprice|Lowest Price" \
-        | fzf \
-            --ansi \
-            --prompt="Sort wishlist by > " \
-            --header="Select sort order for wishlisted sales" \
-            --delimiter="|" \
-            --with-nth=2 \
-            --height=6 \
-            --reverse \
-        | awk -F'|' '{print $1}')
-    [[ -z "$sort" ]] && exit 0
-    echo "Running wishlist..."
-    python3 "$PROJECT_ROOT/lib/wishlist.py" --sort "$sort"
-    ;;
-    *)
-        echo "Unknown action."
-        ;;
-esac
-
+exec "$BINARY"
