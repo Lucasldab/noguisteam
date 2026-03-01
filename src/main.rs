@@ -100,6 +100,12 @@ fn run(
             }
         }
 
+        // ── Force full redraw if flagged ─────
+        if app.needs_clear {
+            app.needs_clear = false;
+            term.clear()?;
+        }
+
         // ── Draw TUI ─────────────────────────
         term.draw(|f| ui::draw(f, app))?;
 
@@ -289,18 +295,23 @@ fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &stea
                 WishlistSort::Discount => WishlistSort::Price,
                 WishlistSort::Price    => WishlistSort::Deal,
             };
-            // Clear before resorting to avoid jammed display
-            app.wishlist.clear();
             app.wishlist_sel = 0;
             sort_wishlist(app);
         }
         KeyCode::Char('o') | KeyCode::Char('O') => {
             if let Some(entry) = app.wishlist.get(app.wishlist_sel) {
                 let url = entry.url.clone();
-                // xdg-open works on Linux; open on macOS
                 let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-                match std::process::Command::new(opener).arg(&url).spawn() {
-                    Ok(_)  => app.set_status(format!("Opening: {}", url)),
+                match std::process::Command::new(opener)
+                    .arg(&url)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_)  => {
+                        app.set_status(format!("Opening: {}", url));
+                        app.needs_clear = true; // xdg-open can briefly corrupt the buffer
+                    }
                     Err(e) => app.set_status(format!("Failed to open URL: {}", e)),
                 }
             }
