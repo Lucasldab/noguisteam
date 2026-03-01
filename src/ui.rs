@@ -72,7 +72,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Tab::Library =>
             " /: Search  |  I: Install  |  U: Uninstall  |  P: Play  |  L: Sync  |  Tab: Switch  |  Q: Quit",
         Tab::Wishlist =>
-            " R: Refresh  |  S: Sort  |  Tab: Switch  |  Q: Quit",
+            " R: Refresh  |  S: Sort (Deal/Discount/Price)  |  O: Open in browser  |  Tab: Switch  |  Q: Quit",
         Tab::Stats =>
             " Tab: Switch  |  Q: Quit",
     };

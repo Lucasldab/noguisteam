@@ -57,6 +57,7 @@ pub struct WishlistEntry {
     pub deal_tag:         String,
     pub store_low:        Option<f64>,
     pub historical_low:   Option<f64>,
+    pub url:              String,   // Steam store page URL
 }
 
 // ─────────────────────────────────────────────

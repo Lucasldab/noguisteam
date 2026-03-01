@@ -266,7 +266,7 @@ struct ItadDeal {
     price:    ItadAmount,
     regular:  ItadAmount,
     cut:      u32,
-    _url:     Option<String>,
+    url:      Option<String>,
     #[serde(rename = "storeLow")]
     store_low: Option<ItadAmount>,
 }
@@ -399,6 +399,11 @@ pub fn fetch_wishlist_sales(config: &SteamConfig) -> Result<Vec<WishlistEntry>> 
             .cloned()
             .unwrap_or_else(|| format!("ITAD:{}", item.id));
 
+        // Steam store URL: prefer ITAD deal URL, fall back to constructed store link
+        let url = best.url.clone()
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| format!("https://store.steampowered.com/app/{}", steam_appid));
+
         results.push(WishlistEntry {
             name,
             current_price:    current,
@@ -407,6 +412,7 @@ pub fn fetch_wishlist_sales(config: &SteamConfig) -> Result<Vec<WishlistEntry>> 
             deal_tag,
             store_low,
             historical_low,
+            url,
         });
     }
 

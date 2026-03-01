@@ -256,8 +256,18 @@ fn handle_library(
 // ─────────────────────────────────────────────
 fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &steam::SteamConfig) {
     match key.code {
-        KeyCode::Up   | KeyCode::Char('k') => { if app.wishlist_sel > 0 { app.wishlist_sel -= 1; } }
-        KeyCode::Down | KeyCode::Char('j') => { if app.wishlist_sel + 1 < app.wishlist.len() { app.wishlist_sel += 1; } }
+        KeyCode::Up   | KeyCode::Char('k') => {
+            if app.wishlist_sel > 0 {
+                app.wishlist_sel -= 1;
+                show_wishlist_url(app);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.wishlist_sel + 1 < app.wishlist.len() {
+                app.wishlist_sel += 1;
+                show_wishlist_url(app);
+            }
+        }
         KeyCode::Char('s') | KeyCode::Char('S') => {
             app.wishlist_sort = match app.wishlist_sort {
                 WishlistSort::Deal     => WishlistSort::Discount,
@@ -265,6 +275,17 @@ fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &stea
                 WishlistSort::Price    => WishlistSort::Deal,
             };
             sort_wishlist(app);
+        }
+        KeyCode::Char('o') | KeyCode::Char('O') => {
+            if let Some(entry) = app.wishlist.get(app.wishlist_sel) {
+                let url = entry.url.clone();
+                // xdg-open works on Linux; open on macOS
+                let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                match std::process::Command::new(opener).arg(&url).spawn() {
+                    Ok(_)  => app.set_status(format!("Opening: {}", url)),
+                    Err(e) => app.set_status(format!("Failed to open URL: {}", e)),
+                }
+            }
         }
         KeyCode::Char('r') | KeyCode::Char('R') => {
             app.wishlist_loading = true;
@@ -284,6 +305,12 @@ fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &stea
             }
         }
         _ => {}
+    }
+}
+
+fn show_wishlist_url(app: &mut App) {
+    if let Some(entry) = app.wishlist.get(app.wishlist_sel) {
+        app.set_status(format!("O: open  |  {}", entry.url));
     }
 }
 
