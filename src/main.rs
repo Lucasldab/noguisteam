@@ -147,9 +147,13 @@ fn run(
                     app.should_quit = true;
                 }
                 KeyCode::Tab => {
+                    renderer.clear();
+                    app.needs_clear = true;
                     app.next_tab();
                 }
                 KeyCode::BackTab => {
+                    renderer.clear();
+                    app.needs_clear = true;
                     app.prev_tab();
                 }
                 _ => {}
