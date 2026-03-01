@@ -6,7 +6,7 @@ mod image;
 mod steam;
 mod ui;
 
-use app::{App, InstallState, Tab, WishlistSort};
+use app::{App, InstallState, Tab, WishlistEntry, WishlistSort};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -65,7 +65,8 @@ fn run(
     renderer: &ImageRenderer,
 ) -> anyhow::Result<()> {
 
-    let (install_tx, install_rx) = mpsc::channel::<String>();
+    let (install_tx, install_rx)   = mpsc::channel::<String>();
+    let (wishlist_tx, wishlist_rx) = mpsc::channel::<Result<Vec<WishlistEntry>, String>>();
     let mut last_rendered_appid: Option<u32> = None;
 
     loop {
@@ -82,6 +83,20 @@ fn run(
                 } else {
                     output.push(line);
                 }
+            }
+        }
+
+        // ── Drain wishlist fetch result ──────
+        if let Ok(result) = wishlist_rx.try_recv() {
+            app.wishlist_loading = false;
+            match result {
+                Ok(mut entries) => {
+                    sort_wishlist_entries(&mut entries, &app.wishlist_sort);
+                    app.wishlist     = entries;
+                    app.wishlist_sel = 0;
+                    app.set_status(format!("{} sales found.", app.wishlist.len()));
+                }
+                Err(e) => app.set_status(format!("Error: {}", e)),
             }
         }
 
@@ -138,7 +153,7 @@ fn run(
 
             match app.active_tab {
                 Tab::Library  => handle_library(key, app, db, db_path, config, install_tx.clone(), &renderer, &mut last_rendered_appid),
-                Tab::Wishlist => handle_wishlist(key, app, config),
+                Tab::Wishlist => handle_wishlist(key, app, config, wishlist_tx.clone()),
                 Tab::Stats    => {}
             }
         }
@@ -254,7 +269,7 @@ fn handle_library(
 // ─────────────────────────────────────────────
 // Wishlist key handling
 // ─────────────────────────────────────────────
-fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &steam::SteamConfig) {
+fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &steam::SteamConfig, wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>) {
     match key.code {
         KeyCode::Up   | KeyCode::Char('k') => {
             if app.wishlist_sel > 0 {
@@ -274,6 +289,9 @@ fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &stea
                 WishlistSort::Discount => WishlistSort::Price,
                 WishlistSort::Price    => WishlistSort::Deal,
             };
+            // Clear before resorting to avoid jammed display
+            app.wishlist.clear();
+            app.wishlist_sel = 0;
             sort_wishlist(app);
         }
         KeyCode::Char('o') | KeyCode::Char('O') => {
@@ -288,21 +306,22 @@ fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &stea
             }
         }
         KeyCode::Char('r') | KeyCode::Char('R') => {
-            app.wishlist_loading = true;
-            app.set_status("Fetching wishlist…".to_string());
-            match steam::fetch_wishlist_sales(config) {
-                Ok(mut entries) => {
-                    sort_wishlist_entries(&mut entries, &app.wishlist_sort);
-                    app.wishlist         = entries;
-                    app.wishlist_sel     = 0;
-                    app.wishlist_loading = false;
-                    app.set_status(format!("{} sales found.", app.wishlist.len()));
-                }
-                Err(e) => {
-                    app.wishlist_loading = false;
-                    app.set_status(format!("Error: {}", e));
-                }
+            if app.wishlist_loading {
+                app.set_status("Already fetching wishlist…".to_string());
+                return;
             }
+            app.wishlist_loading = true;
+            app.wishlist.clear();
+            app.wishlist_sel = 0;
+            app.set_status("Fetching wishlist… (you can switch tabs)".to_string());
+
+            let cfg = steam::SteamConfig::from_env().unwrap();
+            let tx  = wishlist_tx.clone();
+            thread::spawn(move || {
+                let result = steam::fetch_wishlist_sales(&cfg)
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result);
+            });
         }
         _ => {}
     }
