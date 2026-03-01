@@ -163,7 +163,7 @@ fn run(
 
             match app.active_tab {
                 Tab::Library  => handle_library(key, app, db, db_path, config, install_tx.clone(), &renderer, &mut last_rendered_appid),
-                Tab::Wishlist => handle_wishlist(key, app, config, wishlist_tx.clone()),
+                Tab::Wishlist => handle_wishlist(key, app, wishlist_tx.clone()),
                 Tab::Stats    => {}
             }
         }
@@ -279,7 +279,7 @@ fn handle_library(
 // ─────────────────────────────────────────────
 // Wishlist key handling
 // ─────────────────────────────────────────────
-fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &steam::SteamConfig, wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>) {
+fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>) {
     match key.code {
         KeyCode::Up   | KeyCode::Char('k') => {
             if app.wishlist_sel > 0 {
