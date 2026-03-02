@@ -248,8 +248,11 @@ fn handle_library(
             if let Some(game) = app.selected_game() {
                 let _ = std::process::Command::new("steam")
                     .arg(format!("steam://run/{}", game.app_id))
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .spawn();
                 app.set_status(format!("Launching {}…", game.name));
+                app.needs_clear = true;
             }
         }
         KeyCode::Char('l') | KeyCode::Char('L') => {
