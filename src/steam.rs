@@ -99,42 +99,33 @@ pub fn install_game(
 }
 
 pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database) -> Result<()> {
-    let manifest = config.steamlib.join(format!("appmanifest_{}.acf", app_id));
+    // Use steamcmd app_uninstall so the running Steam client is notified.
+    // Manually removing files works on disk but Steam keeps the game cached
+    // in memory and still allows launching until it restarts.
+    let status = std::process::Command::new(&config.steamcmd)
+        .args([
+            "+login",          &config.username,
+            "+app_uninstall",  &app_id.to_string(),
+            "+quit",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to launch steamcmd for uninstall")?;
 
-    // Resolve install dir from manifest
-    let install_path: Option<PathBuf> = if manifest.exists() {
-        let content = std::fs::read_to_string(&manifest).unwrap_or_default();
-        extract_installdir(&content)
-            .map(|dir| config.install_dir.join(dir))
-    } else {
-        None
-    };
-
-    if let Some(path) = install_path {
-        if path.exists() {
-            std::fs::remove_dir_all(&path)
-                .with_context(|| format!("Failed to remove {:?}", path))?;
-        }
+    if !status.success() {
+        return Err(anyhow!("steamcmd app_uninstall failed with status {}", status));
     }
 
+    // steamcmd removes the files and manifest itself.
+    // Belt-and-suspenders: remove manifest if it somehow still exists.
+    let manifest = config.steamlib.join(format!("appmanifest_{}.acf", app_id));
     if manifest.exists() {
         std::fs::remove_file(&manifest)?;
     }
 
     db.mark_installed(app_id, false)?;
     Ok(())
-}
-
-fn extract_installdir(acf: &str) -> Option<String> {
-    for line in acf.lines() {
-        if line.contains("\"installdir\"") {
-            let parts: Vec<&str> = line.splitn(4, '"').collect();
-            if parts.len() >= 4 {
-                return Some(parts[3].to_string());
-            }
-        }
-    }
-    None
 }
 
 // ─────────────────────────────────────────────

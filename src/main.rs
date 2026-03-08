@@ -181,7 +181,7 @@ fn handle_library(
     app:              &mut App,
     db:               &Database,
     db_path:          &PathBuf,
-    config:           &steam::SteamConfig,
+    _config:          &steam::SteamConfig,
     install_tx:       mpsc::Sender<String>,
     renderer:         &ImageRenderer,
     last_appid:       &mut Option<u32>,
@@ -238,10 +238,24 @@ fn handle_library(
                     app.set_status(format!("{} is not installed.", game.name));
                     return;
                 }
-                match steam::uninstall_game(game.app_id, config, db) {
-                    Ok(_)  => { let _ = app.reload_games(db); app.set_status(format!("{} uninstalled.", game.name)); }
-                    Err(e) => app.set_status(format!("Uninstall failed: {}", e)),
-                }
+                let app_id = game.app_id;
+                let db_p   = db_path.clone();
+                let name   = game.name.clone();
+                let tx     = install_tx.clone();
+
+                app.install_state = InstallState::Running {
+                    app_id,
+                    output: vec![format!("Uninstalling {} via steamcmd…", name)],
+                };
+
+                thread::spawn(move || {
+                    let cfg = steam::SteamConfig::from_env().unwrap();
+                    let db  = Database::open(&db_p).unwrap();
+                    match steam::uninstall_game(app_id, &cfg, &db) {
+                        Ok(_)  => { let _ = tx.send(format!("✅ {} uninstalled.", name)); }
+                        Err(e) => { let _ = tx.send(format!("error: {}", e)); }
+                    }
+                });
             }
         }
         KeyCode::Char('p') | KeyCode::Char('P') => {
