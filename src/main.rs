@@ -92,6 +92,11 @@ fn run(
                 } else if line.to_lowercase().contains("error") || line.to_lowercase().contains("failed") {
                     let id = *app_id;
                     app.install_state = InstallState::Done { app_id: id, success: false };
+                } else if line.contains("Waiting for confirmation") {
+                    // Replace repeated "Waiting for confirmation" with a single clear message
+                    if !output.iter().any(|l| l.contains("📱")) {
+                        output.push("📱 Approve Steam Guard in your mobile app…".to_string());
+                    }
                 } else {
                     output.push(line);
                 }
@@ -243,7 +248,9 @@ fn handle_library(
                         Ok(d)  => d,
                         Err(e) => { let _ = tx.send(format!("error: failed to open DB: {}", e)); return; }
                     };
-                    let _ = steam::install_game(app_id, &cfg_clone, &db2, tx);
+                    if let Err(e) = steam::install_game(app_id, &cfg_clone, &db2, tx.clone()) {
+                        let _ = tx.send(format!("error: {}", e));
+                    }
                 });
             }
         }
@@ -279,7 +286,7 @@ fn handle_library(
         KeyCode::Char('p') | KeyCode::Char('P') => {
             if let Some(game) = app.selected_game() {
                 let _ = std::process::Command::new("steam")
-                    .arg(format!("steam://run/{}", game.app_id))
+                    .args(["-silent", &format!("steam://run/{}", game.app_id)])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
@@ -306,6 +313,9 @@ fn handle_library(
         // Dismiss install popup on any key
         _ if matches!(&app.install_state, InstallState::Done { .. }) => {
             app.install_state = InstallState::Idle;
+            renderer.clear();
+            *last_appid = None;
+            app.needs_clear = true;
         }
         _ => {}
     }

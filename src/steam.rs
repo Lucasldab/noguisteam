@@ -16,6 +16,7 @@ pub struct SteamConfig {
     pub api_key:   String,
     pub steam_id:  String,
     pub username:  String,
+    pub password:  String,
     pub itad_key:  Option<String>,
     pub country:   String,
     pub steamcmd:  PathBuf,
@@ -24,8 +25,7 @@ pub struct SteamConfig {
 
 impl SteamConfig {
     pub fn from_env() -> Result<Self> {
-        dotenv::dotenv().ok();
-
+        // .env is already loaded by main() via dotenv::from_path — don't reload from CWD
         let home = std::env::var("HOME").unwrap_or_default();
 
         Ok(Self {
@@ -35,6 +35,8 @@ impl SteamConfig {
                             .context("STEAM_ID not set in .env")?,
             username:    std::env::var("STEAM_USERNAME")
                             .context("STEAM_USERNAME not set in .env")?,
+            password:    std::env::var("STEAM_PASSWORD")
+                            .context("STEAM_PASSWORD not set in .env")?,
             itad_key:    std::env::var("ITAD_KEY").ok(),
             country:     std::env::var("COUNTRY").unwrap_or_else(|_| "US".into()),
             steamcmd:    PathBuf::from(
@@ -50,7 +52,9 @@ impl SteamConfig {
 // Install / Uninstall
 // ─────────────────────────────────────────────
 
-/// Runs steamcmd, sending each line of output to `tx` as it arrives.
+/// Runs steamcmd for install, sending each line of output to `tx` as it arrives.
+/// Password is passed to avoid interactive login prompts. Steam Guard may still
+/// require confirmation via the mobile app (SteamCMD waits automatically).
 pub fn install_game(
     app_id: u32,
     config: &SteamConfig,
@@ -59,13 +63,14 @@ pub fn install_game(
 ) -> Result<()> {
     let mut child = Command::new(&config.steamcmd)
         .args([
-            "+login",      &config.username,
+            "+login",      &config.username, &config.password,
             "+app_update", &app_id.to_string(),
             "validate",
             "+quit",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .stdin(Stdio::null())
         .spawn()
         .context("Failed to launch steamcmd")?;
 
@@ -87,7 +92,7 @@ pub fn install_game(
         db.mark_installed(app_id, true)?;
         let _ = tx.send(format!("✅ {} installed successfully.", app_id));
     } else {
-        return Err(anyhow!("Manifest not found after install — something went wrong."));
+        return Err(anyhow!("Manifest not found after install — Steam may not have recognized the game."));
     }
 
     Ok(())
@@ -99,12 +104,13 @@ pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database) -> Resul
     // in memory and still allows launching until it restarts.
     let status = std::process::Command::new(&config.steamcmd)
         .args([
-            "+login",          &config.username,
+            "+login",          &config.username, &config.password,
             "+app_uninstall",  &app_id.to_string(),
             "+quit",
         ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
         .status()
         .context("Failed to launch steamcmd for uninstall")?;
 
@@ -146,7 +152,10 @@ struct SteamGame {
 
 /// Preferred version — takes the DB path directly.
 pub fn sync_library_to(config: &SteamConfig, db_path: &Path) -> Result<usize> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
 
     let resp: OwnedGamesResponse = client
         .get("https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/")
@@ -287,7 +296,10 @@ pub fn fetch_wishlist_sales(config: &SteamConfig) -> Result<Vec<WishlistEntry>> 
     let itad_key = config.itad_key.as_ref()
         .ok_or_else(|| anyhow!("ITAD_KEY not set in .env"))?;
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
 
     // 1. Fetch wishlist
     let wl: WishlistResponse = client
