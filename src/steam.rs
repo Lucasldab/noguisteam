@@ -383,8 +383,8 @@ pub fn fetch_wishlist_sales(config: &SteamConfig) -> Result<Vec<WishlistEntry>> 
         }
 
         let best = item.deals.iter()
-            .min_by(|a, b| a.price.amount.partial_cmp(&b.price.amount).unwrap())
-            .unwrap();
+            .min_by(|a, b| a.price.amount.total_cmp(&b.price.amount))
+            .ok_or_else(|| anyhow!("No deals found for game despite non-empty check"))?;
 
         let historical_low = item.history_low.as_ref()
             .and_then(|h| h.all.as_ref())
