@@ -162,6 +162,23 @@ pub fn sync_library_to(config: &SteamConfig, db_path: &Path) -> Result<usize> {
         .context("Failed to parse Steam API response")?;
 
     let games = resp.response.games;
+
+    // Guard: Steam returns empty response for private profiles or wrong Steam ID.
+    // If API returns 0 games but DB already has games, abort to prevent data loss.
+    if games.is_empty() {
+        let conn = rusqlite::Connection::open(db_path)?;
+        let existing: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))
+            .unwrap_or(0);
+        if existing > 0 {
+            return Err(anyhow!(
+                "Steam API returned 0 games — profile may be private or Steam ID is wrong. \
+                 Sync aborted to protect your library ({} games).",
+                existing
+            ));
+        }
+    }
+
     let count = games.len();
 
     let conn = rusqlite::Connection::open(db_path)?;
