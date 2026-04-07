@@ -11,6 +11,7 @@ use std::sync::mpsc::Sender;
 // ─────────────────────────────────────────────
 // Config (from .env)
 // ─────────────────────────────────────────────
+#[derive(Clone)]
 pub struct SteamConfig {
     pub api_key:   String,
     pub steam_id:  String,
@@ -19,7 +20,6 @@ pub struct SteamConfig {
     pub country:   String,
     pub steamcmd:  PathBuf,
     pub steamlib:  PathBuf,
-    pub install_dir: PathBuf,
 }
 
 impl SteamConfig {
@@ -42,7 +42,6 @@ impl SteamConfig {
                                 .unwrap_or_else(|_| "/usr/bin/steamcmd".into())
                         ),
             steamlib:    PathBuf::from(format!("{}/.steam/steam/steamapps", home)),
-            install_dir: PathBuf::from(format!("{}/.steam/steam/steamapps/common", home)),
         })
     }
 }
@@ -58,14 +57,10 @@ pub fn install_game(
     db: &Database,
     tx: Sender<String>,
 ) -> Result<()> {
-    let install_path = config.install_dir.join(app_id.to_string());
-    std::fs::create_dir_all(&install_path)?;
-
     let mut child = Command::new(&config.steamcmd)
         .args([
-            "+force_install_dir", install_path.to_str().unwrap_or_default(),
-            "+login",             &config.username,
-            "+app_update",        &app_id.to_string(),
+            "+login",      &config.username,
+            "+app_update", &app_id.to_string(),
             "validate",
             "+quit",
         ])
