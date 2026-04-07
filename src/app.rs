@@ -89,6 +89,7 @@ pub struct App {
     // Global
     pub status_msg:    Option<String>,
     pub should_quit:   bool,
+    pub needs_clear:   bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +119,7 @@ impl App {
             stats_dirty:      true,
             status_msg:       None,
             should_quit:      false,
+            needs_clear:      false,
         };
 
         app.apply_filter();

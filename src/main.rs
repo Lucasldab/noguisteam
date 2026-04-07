@@ -175,7 +175,7 @@ fn run(
 
             match app.active_tab {
                 Tab::Library  => handle_library(key, app, db, db_path, config, install_tx.clone(), &renderer, &mut last_rendered_appid),
-                Tab::Wishlist => handle_wishlist(key, app, wishlist_tx.clone()),
+                Tab::Wishlist => handle_wishlist(key, app, config, wishlist_tx.clone()),
                 Tab::Stats    => {}
             }
         }
@@ -193,7 +193,7 @@ fn handle_library(
     app:              &mut App,
     db:               &Database,
     db_path:          &PathBuf,
-    _config:          &steam::SteamConfig,
+    config:           &steam::SteamConfig,
     install_tx:       mpsc::Sender<String>,
     renderer:         &ImageRenderer,
     last_appid:       &mut Option<u32>,
@@ -228,9 +228,10 @@ fn handle_library(
                     app.set_status(format!("{} is already installed.", game.name));
                     return;
                 }
-                let app_id = game.app_id;
-                let tx     = install_tx.clone();
-                let db_p   = db_path.clone();
+                let app_id     = game.app_id;
+                let tx         = install_tx.clone();
+                let db_p       = db_path.clone();
+                let cfg_clone  = config.clone();
 
                 app.install_state = InstallState::Running {
                     app_id,
@@ -238,9 +239,11 @@ fn handle_library(
                 };
 
                 thread::spawn(move || {
-                    let cfg = steam::SteamConfig::from_env().unwrap();
-                    let db  = Database::open(&db_p).unwrap();
-                    let _   = steam::install_game(app_id, &cfg, &db, tx);
+                    let db2 = match Database::open(&db_p) {
+                        Ok(d)  => d,
+                        Err(e) => { let _ = tx.send(format!("error: failed to open DB: {}", e)); return; }
+                    };
+                    let _ = steam::install_game(app_id, &cfg_clone, &db2, tx);
                 });
             }
         }
@@ -250,10 +253,11 @@ fn handle_library(
                     app.set_status(format!("{} is not installed.", game.name));
                     return;
                 }
-                let app_id = game.app_id;
-                let db_p   = db_path.clone();
-                let name   = game.name.clone();
-                let tx     = install_tx.clone();
+                let app_id    = game.app_id;
+                let db_p      = db_path.clone();
+                let name      = game.name.clone();
+                let tx        = install_tx.clone();
+                let cfg_clone = config.clone();
 
                 app.install_state = InstallState::Running {
                     app_id,
@@ -261,9 +265,11 @@ fn handle_library(
                 };
 
                 thread::spawn(move || {
-                    let cfg = steam::SteamConfig::from_env().unwrap();
-                    let db  = Database::open(&db_p).unwrap();
-                    match steam::uninstall_game(app_id, &cfg, &db) {
+                    let db2 = match Database::open(&db_p) {
+                        Ok(d)  => d,
+                        Err(e) => { let _ = tx.send(format!("error: failed to open DB: {}", e)); return; }
+                    };
+                    match steam::uninstall_game(app_id, &cfg_clone, &db2) {
                         Ok(_)  => { let _ = tx.send(format!("✅ {} uninstalled.", name)); }
                         Err(e) => { let _ = tx.send(format!("error: {}", e)); }
                     }
@@ -283,12 +289,12 @@ fn handle_library(
         }
         KeyCode::Char('l') | KeyCode::Char('L') => {
             app.set_status("Syncing library…".to_string());
-            let db_p = db_path.clone();
+            let db_p      = db_path.clone();
+            let cfg_clone = config.clone();
             let handle = thread::spawn(move || {
-                let cfg = steam::SteamConfig::from_env().unwrap();
-                steam::sync_library_to(&cfg, &db_p)
+                steam::sync_library_to(&cfg_clone, &db_p)
             });
-            match handle.join().unwrap() {
+            match handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("sync thread panicked"))) {
                 Ok(n)  => { let _ = app.reload_games(db); app.set_status(format!("Synced — {} games.", n)); }
                 Err(e) => app.set_status(format!("Sync failed: {}", e)),
             }
@@ -308,7 +314,7 @@ fn handle_library(
 // ─────────────────────────────────────────────
 // Wishlist key handling
 // ─────────────────────────────────────────────
-fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>) {
+fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &steam::SteamConfig, wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>) {
     match key.code {
         KeyCode::Up   | KeyCode::Char('k') => {
             if app.wishlist_sel > 0 {
@@ -359,7 +365,7 @@ fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, wishlist_tx: 
             app.wishlist_sel = 0;
             app.set_status("Fetching wishlist… (you can switch tabs)".to_string());
 
-            let cfg = steam::SteamConfig::from_env().unwrap();
+            let cfg = config.clone();
             let tx  = wishlist_tx.clone();
             thread::spawn(move || {
                 let result = steam::fetch_wishlist_sales(&cfg)
@@ -384,9 +390,9 @@ fn sort_wishlist(app: &mut App) {
 
 fn sort_wishlist_entries(entries: &mut Vec<app::WishlistEntry>, sort: &WishlistSort) {
     match sort {
-        WishlistSort::Deal     => entries.sort_by(|a, b| deal_order(&a.deal_tag).cmp(&deal_order(&b.deal_tag)).then(a.current_price.partial_cmp(&b.current_price).unwrap())),
+        WishlistSort::Deal     => entries.sort_by(|a, b| deal_order(&a.deal_tag).cmp(&deal_order(&b.deal_tag)).then(a.current_price.total_cmp(&b.current_price))),
         WishlistSort::Discount => entries.sort_by(|a, b| b.discount_percent.cmp(&a.discount_percent)),
-        WishlistSort::Price    => entries.sort_by(|a, b| a.current_price.partial_cmp(&b.current_price).unwrap()),
+        WishlistSort::Price    => entries.sort_by(|a, b| a.current_price.total_cmp(&b.current_price)),
     }
 }
 
