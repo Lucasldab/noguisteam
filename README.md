@@ -1,124 +1,122 @@
 # No GUI Steam
-A lightweight terminal-based tool for managing your Steam games using **SteamCMD**.
-Install, uninstall, play, update your Steam library, and check wishlisted sales directly from the command line with a simple TUI (Text User Interface).
 
-**Note:** Steam must be installed; this tool complements the Steam client and does not replace it.
+A terminal UI for managing a Steam library via **SteamCMD**. Install, uninstall, launch, sync, and watch wishlist sales — all from the keyboard.
+
+Built in Rust with [ratatui](https://github.com/ratatui-org/ratatui). Steam client must still be installed; this tool complements it.
 
 ---
 
 ## Features
 
-* Install and uninstall Steam games without the Steam GUI.
-* Play games directly from the terminal.
-* Keep your Steam library in sync with a local database.
-* Check your Steam wishlist for active sales, sorted by deal quality, discount, or price.
-* Supports environment-based configuration for Steam credentials and API keys.
-* Simple, clean, and scriptable for automation.
+* Library tab — install / uninstall / launch games, incremental search, cover art preview.
+* Wishlist tab — fetch active sales via [IsThereAnyDeal](https://isthereanydeal.com), sort by deal quality / discount / price, open store page.
+* Local SQLite cache of your Steam library.
+* Async installs and wishlist fetches — UI stays responsive.
+* Panic-safe terminal restore.
 
 ---
 
 ## Requirements
 
 * Linux or macOS
-* [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD)
-* Git
-* Python 3 (for library sync and wishlist)
-* Bash shell
-* [fzf](https://github.com/junegunn/fzf) (for interactive TUI)
+* [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) on `PATH` (or set `STEAMCMD`)
+* Steam client (for `steam://run/<appid>` launching)
+* Rust toolchain (stable) to build
+* Optional: [`chafa`](https://hpjansson.org/chafa/) for cover art in the Library tab
 
 ---
 
-## Installation
-
-Clone the repository:
+## Build
 
 ```bash
 git clone git@github.com:Lucasldab/noguisteam.git
 cd noguisteam
+cargo build --release
 ```
 
-Make the main script executable:
+Binary: `target/release/noguisteam`.
 
-```bash
-chmod +x bin/noguisteam
-```
+---
 
-Create your environment file:
+## Configuration
+
+Copy the template and fill in credentials:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+Keys:
 
-```env
-STEAM_API_KEY=your_steam_api_key
-STEAM_ID=your_steam_id
-STEAM_USERNAME=your_steam_username
-ITAD_KEY=your_itad_api_key
-COUNTRY=BR
-```
+| Key | Purpose |
+| --- | --- |
+| `STEAM_API_KEY` | Steam Web API key ([get one](https://steamcommunity.com/dev/apikey)) |
+| `STEAM_ID` | Your 64-bit SteamID |
+| `STEAM_USERNAME` | Steam login for SteamCMD |
+| `STEAM_PASSWORD` | Steam password (optional; SteamCMD will prompt if unset) |
+| `ITAD_KEY` | IsThereAnyDeal API key — required for wishlist sales ([get one](https://isthereanydeal.com/apps/my/)) |
+| `COUNTRY` | Regional pricing code (e.g. `US`, `DE`, `GB`, `BR`) |
+| `STEAMCMD` | Optional path to `steamcmd` binary |
 
-> **Note:** Never commit your `.env` file with real credentials. Use `.env.example` as a template.
->
-> `ITAD_KEY` is required for wishlist sale checking. Get one free at [isthereanydeal.com](https://isthereanydeal.com/apps/my/). `COUNTRY` controls regional pricing (e.g. `US` for US Dollar, `DE` for Euro, `GB` for British Pound).
+The `.env` is loaded from the project root (resolved from the binary location or `NOGUISTEAM_HOME`). Your Steam profile must be **public** for library sync.
 
 ---
 
 ## Usage
 
-Run the TUI:
-
 ```bash
-./bin/noguisteam
+./target/release/noguisteam
 ```
 
-Actions in the TUI:
+### Global
 
-* **I** – Install a game
-* **U** – Uninstall a game
-* **P** – Play a game
-* **L** – Update library (sync with Steam)
-* **W** – Check wishlisted sales
+* `Tab` / `Shift+Tab` — switch tabs (Library / Wishlist / Stats)
+* `q` — quit
 
-When pressing **W**, you will be prompted to choose a sort order for the results:
+### Library
 
-* **Best Deal** – highlights historical and all-time lows first
-* **Highest Discount %** – biggest discounts at the top
-* **Lowest Price** – cheapest games first
+* `↑` / `↓` or `k` / `j` — navigate
+* `/` — incremental search (Esc to clear)
+* `i` — install selected game
+* `u` — uninstall selected game
+* `p` — launch via Steam
+* `l` — sync library from Steam Web API
+
+### Wishlist
+
+* `r` — fetch / refresh sales
+* `s` — cycle sort (Best Deal → Discount → Price)
+* `o` — open store page in browser
+* `↑` / `↓` or `k` / `j` — navigate
 
 ---
 
-## Development
+## Source layout
 
-The project is modular:
-
-* `lib/env.sh` — loads environment variables
-* `lib/db.sh` — handles the local database
-* `lib/install.sh` — install/uninstall logic
-* `lib/manifest.sh` — Steam manifest handling
-* `lib/sync.py` — library synchronization
-* `lib/wishlist.py` — wishlist sale checker (requires `ITAD_KEY` and `COUNTRY`)
-* `lib/ui.sh` — terminal user interface
+* `src/main.rs` — entry point, event loop, key dispatch
+* `src/app.rs` — app state (tabs, selection, install state, wishlist)
+* `src/ui.rs` — ratatui rendering
+* `src/steam.rs` — SteamCMD + Steam Web API + ITAD integration
+* `src/db.rs` — SQLite cache
+* `src/image.rs` — cover art rendering via `chafa`
 
 ---
 
 ## Contributing
 
-1. Fork the repository.
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit your changes: `git commit -m "Add my feature"`
-4. Push to the branch: `git push origin feature/my-feature`
-5. Open a Pull Request.
+1. Fork the repo
+2. Branch: `git checkout -b feature/my-feature`
+3. Commit and push
+4. Open a PR
 
 ---
 
 ## License
 
-This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
 ---
 
 ## Disclaimer
 
-This project is not affiliated with, endorsed by, or associated with Valve Corporation or Steam. All trademarks are the property of their respective owners.
+Not affiliated with, endorsed by, or associated with Valve Corporation or Steam. All trademarks belong to their respective owners.
