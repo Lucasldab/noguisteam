@@ -52,6 +52,73 @@ impl SteamConfig {
 // Install / Uninstall
 // ─────────────────────────────────────────────
 
+/// Strip ANSI escape sequences and progress-bar carriage returns from a line
+/// of steamcmd output. Steamcmd uses `\r` to redraw progress in place, so a
+/// single `\n`-terminated line can carry many overwritten frames plus CSI
+/// codes; rendering that raw produces visible garbage in the popup.
+fn sanitize_line(input: &str) -> String {
+    let frame = input.rsplit('\r').next().unwrap_or(input);
+
+    let mut out = String::with_capacity(frame.len());
+    let mut chars = frame.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => {
+                // Drop ANSI CSI sequence: ESC [ ... <final byte 0x40..=0x7E>.
+                if chars.next() == Some('[') {
+                    for b in chars.by_ref() {
+                        if matches!(b, '\x40'..='\x7e') { break; }
+                    }
+                }
+            }
+            '\t' => out.push(' '),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Returns true if a `steam` process is currently running on this machine.
+fn is_steam_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "steam"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// If Steam is running, ask it to shut down gracefully and relaunch silently.
+/// This makes the client re-scan `steamapps/` so a freshly installed game
+/// shows up in the library without the user restarting Steam manually.
+fn restart_steam_if_running(tx: &Sender<String>) {
+    if !is_steam_running() {
+        return;
+    }
+    let _ = tx.send("🔄 Restarting Steam to register new game…".to_string());
+
+    let _ = Command::new("steam")
+        .arg("-shutdown")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .status();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while is_steam_running() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    let _ = Command::new("steam")
+        .arg("-silent")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
 /// Runs steamcmd for install, sending each line of output to `tx` as it arrives.
 /// Password is passed to avoid interactive login prompts. Steam Guard may still
 /// require confirmation via the mobile app (SteamCMD waits automatically).
@@ -77,7 +144,10 @@ pub fn install_game(
     if let Some(stdout) = child.stdout.take() {
         use std::io::{BufRead, BufReader};
         for line in BufReader::new(stdout).lines().flatten() {
-            let _ = tx.send(line);
+            let cleaned = sanitize_line(&line);
+            if !cleaned.is_empty() {
+                let _ = tx.send(cleaned);
+            }
         }
     }
 
@@ -90,6 +160,7 @@ pub fn install_game(
     let manifest = config.steamlib.join(format!("appmanifest_{}.acf", app_id));
     if manifest.exists() {
         db.mark_installed(app_id, true)?;
+        restart_steam_if_running(&tx);
         let _ = tx.send(format!("✅ {} installed successfully.", app_id));
     } else {
         return Err(anyhow!("Manifest not found after install — Steam may not have recognized the game."));
