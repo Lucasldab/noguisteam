@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy to ~/.config/noguisteam/colors.json (or to ./colors.json) and edit. Any field may be a hex string (\"#00ffff\"), an r,g,b triple (\"0,255,255\"), an ANSI palette index (\"208\"), or a named color (\"Cyan\", \"DarkGray\", \"LightRed\"). Missing fields keep the defaults.",
+
+  "accent": "#00d7ff",
+  "dim":    "DarkGray",
+  "ok":     "#7cff00",
+  "warn":   "#ffaa00",
+  "err":    "#ff4040",
+  "sel":    "#00d7ff",
+  "border": "DarkGray"
+}
