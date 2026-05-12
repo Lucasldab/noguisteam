@@ -2,6 +2,8 @@
 
 use crate::db::{Database, Game};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 // ─────────────────────────────────────────────
 // Tabs
@@ -48,7 +50,7 @@ pub enum InstallState {
 // ─────────────────────────────────────────────
 // Wishlist entry (populated from API)
 // ─────────────────────────────────────────────
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WishlistEntry {
     pub name:             String,
     pub current_price:    f64,
@@ -83,6 +85,12 @@ pub struct App {
     pub wishlist_sort: WishlistSort,
     pub wishlist_loading: bool,
 
+    // Library sync
+    pub sync_loading:  bool,
+
+    // Steam library path — used by UI to look up on-disk sizes from appmanifests
+    pub steamlib:      PathBuf,
+
     // Stats tab — derived lazily
     pub stats_dirty:   bool,
 
@@ -100,7 +108,7 @@ pub enum WishlistSort {
 }
 
 impl App {
-    pub fn new(db: &Database) -> Result<Self> {
+    pub fn new(db: &Database, steamlib: PathBuf) -> Result<Self> {
         let games = db.list_games()?;
         let count = games.len();
 
@@ -116,6 +124,8 @@ impl App {
             wishlist_sel:     0,
             wishlist_sort:    WishlistSort::Deal,
             wishlist_loading: false,
+            sync_loading:     false,
+            steamlib,
             stats_dirty:      true,
             status_msg:       None,
             should_quit:      false,

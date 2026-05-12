@@ -32,8 +32,23 @@ fn main() -> anyhow::Result<()> {
     let db_path      = project_root.join("steam_games.db");
     let db           = Database::open(&db_path)?;
 
-    let mut app  = App::new(&db)?;
-    let renderer = ImageRenderer::new();
+    // ── Color palette ─────────────────────────
+    // Prefer ~/.config/noguisteam/colors.json (XDG); fall back to project-root
+    // colors.json. Missing files use the built-in palette.
+    let palette_path = xdg_config_path("colors.json")
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| project_root.join("colors.json"));
+    ui::set_palette(ui::load_palette_from(&palette_path));
+
+    // One shared HTTP client (connection pool, gzip, timeouts) used for
+    // every Steam/ITAD/CDN request in the app.
+    let http = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("noguisteam/0.1")
+        .build()?;
+
+    let mut app  = App::new(&db, config.steamlib.clone())?;
+    let renderer = ImageRenderer::new(http.clone());
 
     // Restore terminal on panic so the user sees a usable shell + panic message
     let original_hook = std::panic::take_hook();
@@ -53,7 +68,7 @@ fn main() -> anyhow::Result<()> {
     let backend  = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
-    let result = run(&mut term, &mut app, &db, &db_path, &config, &renderer);
+    let result = run(&mut term, &mut app, &db, &db_path, &config, &renderer, &http);
 
     disable_raw_mode()?;
     execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
@@ -75,14 +90,60 @@ fn run(
     db_path:  &PathBuf,
     config:   &steam::SteamConfig,
     renderer: &ImageRenderer,
+    http:     &reqwest::blocking::Client,
 ) -> anyhow::Result<()> {
 
     let (install_tx, install_rx)   = mpsc::channel::<String>();
     let (wishlist_tx, wishlist_rx) = mpsc::channel::<Result<Vec<WishlistEntry>, String>>();
+    let (sync_tx, sync_rx)         = mpsc::channel::<Result<usize, String>>();
     let mut last_rendered_appid: Option<u32> = None;
+
+    // ── Hydrate wishlist from on-disk cache; auto-refresh if stale (>6h) ──
+    const WISHLIST_TTL_SECS: u64 = 6 * 3600;
+    if let Some((mut entries, age)) = db.load_wishlist_cache::<WishlistEntry>() {
+        sort_wishlist_entries(&mut entries, &app.wishlist_sort);
+        app.wishlist = entries;
+        let mins = age / 60;
+        let label = if mins < 60 { format!("{}m", mins) } else { format!("{}h", mins / 60) };
+        app.set_status(format!("Wishlist cached ({} ago — press R to refresh).", label));
+
+        if age > WISHLIST_TTL_SECS && config.itad_key.is_some() && !app.wishlist_loading {
+            app.wishlist_loading = true;
+            let cfg    = config.clone();
+            let tx     = wishlist_tx.clone();
+            let client = http.clone();
+            let db_p   = db_path.clone();
+            thread::spawn(move || {
+                let result = (|| -> Result<Vec<WishlistEntry>, String> {
+                    let db2 = Database::open(&db_p).map_err(|e| e.to_string())?;
+                    let entries = steam::fetch_wishlist_sales(&client, &cfg, &db2)
+                        .map_err(|e| e.to_string())?;
+                    let _ = db2.save_wishlist_cache(&entries);
+                    Ok(entries)
+                })();
+                let _ = tx.send(result);
+            });
+        }
+    }
+
+    // ── Optional auto-sync at startup (AUTO_SYNC=1 in .env) ──
+    if config.auto_sync && !app.sync_loading {
+        app.sync_loading = true;
+        app.set_status("Auto-syncing library…");
+        let db_p   = db_path.clone();
+        let cfg    = config.clone();
+        let tx     = sync_tx.clone();
+        let client = http.clone();
+        thread::spawn(move || {
+            let result = steam::sync_library_to(&client, &cfg, &db_p)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+    }
 
     loop {
         // ── Drain install subprocess output ──
+        const INSTALL_OUTPUT_CAP: usize = 200;
         while let Ok(line) = install_rx.try_recv() {
             if let InstallState::Running { output, app_id } = &mut app.install_state {
                 if line.starts_with("✅") {
@@ -99,6 +160,11 @@ fn run(
                     }
                 } else {
                     output.push(line);
+                    // Keep memory bounded on huge installs (50GB games emit thousands of lines).
+                    if output.len() > INSTALL_OUTPUT_CAP {
+                        let drop = output.len() - INSTALL_OUTPUT_CAP;
+                        output.drain(0..drop);
+                    }
                 }
             }
         }
@@ -116,6 +182,20 @@ fn run(
                 Err(e) => app.set_status(format!("Error: {}", e)),
             }
         }
+
+        // ── Drain library sync result ────────
+        if let Ok(result) = sync_rx.try_recv() {
+            app.sync_loading = false;
+            match result {
+                Ok(n)  => { let _ = app.reload_games(db); app.set_status(format!("Synced — {} games.", n)); }
+                Err(e) => app.set_status(format!("Sync failed: {}", e)),
+            }
+        }
+
+        // ── Drain image-fetch completions so the next paint picks up new cache hits
+        let mut image_ready = false;
+        while renderer.done_rx.try_recv().is_ok() { image_ready = true; }
+        if image_ready { last_rendered_appid = None; }
 
         // ── Force full redraw if flagged ─────
         if app.needs_clear {
@@ -179,8 +259,8 @@ fn run(
             if app.should_quit { break; }
 
             match app.active_tab {
-                Tab::Library  => handle_library(key, app, db, db_path, config, install_tx.clone(), &renderer, &mut last_rendered_appid),
-                Tab::Wishlist => handle_wishlist(key, app, config, wishlist_tx.clone()),
+                Tab::Library  => handle_library(key, app, db_path, config, install_tx.clone(), sync_tx.clone(), http, &renderer, &mut last_rendered_appid),
+                Tab::Wishlist => handle_wishlist(key, app, config, db_path, http, wishlist_tx.clone()),
                 Tab::Stats    => {}
             }
         }
@@ -196,10 +276,11 @@ fn run(
 fn handle_library(
     key:              crossterm::event::KeyEvent,
     app:              &mut App,
-    db:               &Database,
     db_path:          &PathBuf,
     config:           &steam::SteamConfig,
     install_tx:       mpsc::Sender<String>,
+    sync_tx:          mpsc::Sender<Result<usize, String>>,
+    http:             &reqwest::blocking::Client,
     renderer:         &ImageRenderer,
     last_appid:       &mut Option<u32>,
 ) {
@@ -238,9 +319,22 @@ fn handle_library(
                 let db_p       = db_path.clone();
                 let cfg_clone  = config.clone();
 
+                let mut startup = vec![format!("Starting install for {}…", game.name)];
+                if let Some(free) = steam::free_bytes_for(&config.steamlib) {
+                    let median = steam::installed_median_size(&config.steamlib);
+                    startup.push(format!(
+                        "💾 {} free on Steam library partition (median installed game: {}).",
+                        steam::human_bytes(free),
+                        steam::human_bytes(median),
+                    ));
+                    if free < median.saturating_mul(2) {
+                        startup.push("⚠️  Low disk space — install may fail.".to_string());
+                    }
+                }
+
                 app.install_state = InstallState::Running {
                     app_id,
-                    output: vec![format!("Starting install for {}…", game.name)],
+                    output: startup,
                 };
 
                 thread::spawn(move || {
@@ -295,16 +389,22 @@ fn handle_library(
             }
         }
         KeyCode::Char('l') | KeyCode::Char('L') => {
-            app.set_status("Syncing library…".to_string());
+            if app.sync_loading {
+                app.set_status("Already syncing…".to_string());
+                return;
+            }
+            app.sync_loading = true;
+            app.set_status("Syncing library… (you can keep using the UI)".to_string());
+
             let db_p      = db_path.clone();
             let cfg_clone = config.clone();
-            let handle = thread::spawn(move || {
-                steam::sync_library_to(&cfg_clone, &db_p)
+            let tx        = sync_tx.clone();
+            let client    = http.clone();
+            thread::spawn(move || {
+                let result = steam::sync_library_to(&client, &cfg_clone, &db_p)
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result);
             });
-            match handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("sync thread panicked"))) {
-                Ok(n)  => { let _ = app.reload_games(db); app.set_status(format!("Synced — {} games.", n)); }
-                Err(e) => app.set_status(format!("Sync failed: {}", e)),
-            }
         }
         KeyCode::Esc => {
             if !app.search.is_empty() { app.search.clear(); app.apply_filter(); }
@@ -324,7 +424,14 @@ fn handle_library(
 // ─────────────────────────────────────────────
 // Wishlist key handling
 // ─────────────────────────────────────────────
-fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &steam::SteamConfig, wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>) {
+fn handle_wishlist(
+    key: crossterm::event::KeyEvent,
+    app: &mut App,
+    config: &steam::SteamConfig,
+    db_path: &PathBuf,
+    http: &reqwest::blocking::Client,
+    wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>,
+) {
     match key.code {
         KeyCode::Up   | KeyCode::Char('k') => {
             if app.wishlist_sel > 0 {
@@ -375,11 +482,19 @@ fn handle_wishlist(key: crossterm::event::KeyEvent, app: &mut App, config: &stea
             app.wishlist_sel = 0;
             app.set_status("Fetching wishlist… (you can switch tabs)".to_string());
 
-            let cfg = config.clone();
-            let tx  = wishlist_tx.clone();
+            let cfg      = config.clone();
+            let tx       = wishlist_tx.clone();
+            let client   = http.clone();
+            let db_p     = db_path.clone();
             thread::spawn(move || {
-                let result = steam::fetch_wishlist_sales(&cfg)
-                    .map_err(|e| e.to_string());
+                let result = (|| -> Result<Vec<WishlistEntry>, String> {
+                    let db2 = Database::open(&db_p).map_err(|e| e.to_string())?;
+                    let entries = steam::fetch_wishlist_sales(&client, &cfg, &db2)
+                        .map_err(|e| e.to_string())?;
+                    // Refresh on-disk cache; ignore failure since the data is still good.
+                    let _ = db2.save_wishlist_cache(&entries);
+                    Ok(entries)
+                })();
                 let _ = tx.send(result);
             });
         }
@@ -413,10 +528,23 @@ fn deal_order(tag: &str) -> u8 {
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
+fn xdg_config_path(file: &str) -> Option<PathBuf> {
+    let base = std::env::var("XDG_CONFIG_HOME").ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("noguisteam").join(file))
+}
+
 fn project_root() -> PathBuf {
+    if let Ok(home) = std::env::var("NOGUISTEAM_HOME") {
+        let p = PathBuf::from(home);
+        if p.join(".env").exists() || p.join("steam_games.db").exists() {
+            return p;
+        }
+    }
     let exe = std::env::current_exe().unwrap_or_default();
     let mut dir = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-    for _ in 0..4 {
+    for _ in 0..6 {
         if dir.join("steam_games.db").exists() || dir.join(".env").exists() {
             return dir;
         }

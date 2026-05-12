@@ -15,9 +15,8 @@ crossterm      = "0.27"
 # Database
 rusqlite       = { version = "0.31", features = ["bundled"] }
 
-# HTTP + async
-reqwest        = { version = "0.12", features = ["json", "blocking"] }
-tokio          = { version = "1",    features = ["full"] }
+# HTTP (blocking only — no tokio runtime needed)
+reqwest        = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 
 # Serialization
 serde          = { version = "1",    features = ["derive"] }
@@ -28,9 +27,6 @@ dotenv         = "0.15"
 
 # Error handling
 anyhow         = "1"
-
-# Config
-toml           = "0.8"
 
 [profile.release]
 strip     = true
