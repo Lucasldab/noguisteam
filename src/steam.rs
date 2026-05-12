@@ -16,11 +16,14 @@ pub struct SteamConfig {
     pub api_key:   String,
     pub steam_id:  String,
     pub username:  String,
-    pub password:  String,
+    /// Optional: if unset, steamcmd uses cached credentials from a prior
+    /// interactive `+login user` (preferred — keeps the password off disk).
+    pub password:  Option<String>,
     pub itad_key:  Option<String>,
     pub country:   String,
     pub steamcmd:  PathBuf,
     pub steamlib:  PathBuf,
+    pub auto_sync: bool,
 }
 
 impl SteamConfig {
@@ -35,8 +38,7 @@ impl SteamConfig {
                             .context("STEAM_ID not set in .env")?,
             username:    std::env::var("STEAM_USERNAME")
                             .context("STEAM_USERNAME not set in .env")?,
-            password:    std::env::var("STEAM_PASSWORD")
-                            .context("STEAM_PASSWORD not set in .env")?,
+            password:    std::env::var("STEAM_PASSWORD").ok().filter(|s| !s.is_empty()),
             itad_key:    std::env::var("ITAD_KEY").ok(),
             country:     std::env::var("COUNTRY").unwrap_or_else(|_| "US".into()),
             steamcmd:    PathBuf::from(
@@ -44,8 +46,92 @@ impl SteamConfig {
                                 .unwrap_or_else(|_| "/usr/bin/steamcmd".into())
                         ),
             steamlib:    PathBuf::from(format!("{}/.steam/steam/steamapps", home)),
+            auto_sync:   matches!(
+                std::env::var("AUTO_SYNC").unwrap_or_default().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
         })
     }
+}
+
+/// Build the steamcmd `+login` arguments. Omits the password when not set so
+/// steamcmd uses its cached session instead.
+fn login_args(config: &SteamConfig) -> Vec<String> {
+    let mut v = vec!["+login".to_string(), config.username.clone()];
+    if let Some(pw) = &config.password {
+        v.push(pw.clone());
+    }
+    v
+}
+
+/// Bytes free on the filesystem holding `path`. Uses `df -B1` to avoid pulling
+/// in a libc/nix dependency. Returns None if df is unavailable or output is
+/// unparseable.
+pub fn free_bytes_for(path: &Path) -> Option<u64> {
+    let out = Command::new("df")
+        .args(["-B1", "--output=avail"])
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Format:
+    //   Avail
+    //   123456789
+    text.lines().nth(1)?.trim().parse::<u64>().ok()
+}
+
+/// Best-effort install size estimate. Steam's store API returns size as a
+/// localized free-text string ("Storage: 50 GB") that we can't parse robustly,
+/// so we use a coarse heuristic: median SizeOnDisk of currently-installed
+/// games (in bytes), or a 10 GB fallback when nothing is installed.
+pub fn installed_median_size(steamlib: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(steamlib) else { return 10 * 1024u64.pow(3); };
+    let mut sizes: Vec<u64> = Vec::new();
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("appmanifest_") || !name.ends_with(".acf") { continue; }
+        let path = entry.path();
+        let Ok(text) = std::fs::read_to_string(&path) else { continue; };
+        if let Some(size) = parse_acf_size(&text) {
+            sizes.push(size);
+        }
+    }
+    if sizes.is_empty() { return 10 * 1024u64.pow(3); }
+    sizes.sort_unstable();
+    sizes[sizes.len() / 2]
+}
+
+fn parse_acf_size(text: &str) -> Option<u64> {
+    // VDF lines look like: "\t\"SizeOnDisk\"\t\t\"1234567\""
+    for line in text.lines() {
+        let l = line.trim();
+        if !l.starts_with("\"SizeOnDisk\"") { continue; }
+        // Split out the quoted value at end of line.
+        let last_quote_end = l.rfind('"')?;
+        let pre = &l[..last_quote_end];
+        let last_quote_start = pre.rfind('"')?;
+        return l[last_quote_start + 1 .. last_quote_end].parse::<u64>().ok();
+    }
+    None
+}
+
+/// On-disk byte size of an installed game, from its appmanifest.
+pub fn game_size_on_disk(steamlib: &Path, app_id: u32) -> Option<u64> {
+    let path = steamlib.join(format!("appmanifest_{}.acf", app_id));
+    let text = std::fs::read_to_string(&path).ok()?;
+    parse_acf_size(&text)
+}
+
+pub fn human_bytes(n: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 { v /= 1024.0; i += 1; }
+    if i == 0 { format!("{} {}", n, UNITS[i]) } else { format!("{:.1} {}", v, UNITS[i]) }
 }
 
 // ─────────────────────────────────────────────
@@ -128,13 +214,11 @@ pub fn install_game(
     db: &Database,
     tx: Sender<String>,
 ) -> Result<()> {
+    let mut args = login_args(config);
+    args.extend(["+app_update".into(), app_id.to_string(), "validate".into(), "+quit".into()]);
+
     let mut child = Command::new(&config.steamcmd)
-        .args([
-            "+login",      &config.username, &config.password,
-            "+app_update", &app_id.to_string(),
-            "validate",
-            "+quit",
-        ])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
@@ -173,12 +257,11 @@ pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database) -> Resul
     // Use steamcmd app_uninstall so the running Steam client is notified.
     // Manually removing files works on disk but Steam keeps the game cached
     // in memory and still allows launching until it restarts.
+    let mut args = login_args(config);
+    args.extend(["+app_uninstall".into(), app_id.to_string(), "+quit".into()]);
+
     let status = std::process::Command::new(&config.steamcmd)
-        .args([
-            "+login",          &config.username, &config.password,
-            "+app_uninstall",  &app_id.to_string(),
-            "+quit",
-        ])
+        .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
@@ -221,13 +304,9 @@ struct SteamGame {
     rtime_last_played: u64,
 }
 
-/// Preferred version — takes the DB path directly.
-pub fn sync_library_to(config: &SteamConfig, db_path: &Path) -> Result<usize> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("Failed to build HTTP client")?;
-
+/// Preferred version — takes the DB path directly. Caller supplies the HTTP
+/// client so a single connection pool is shared across the app.
+pub fn sync_library_to(client: &reqwest::blocking::Client, config: &SteamConfig, db_path: &Path) -> Result<usize> {
     let resp: OwnedGamesResponse = client
         .get("https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/")
         .query(&[
@@ -261,18 +340,11 @@ pub fn sync_library_to(config: &SteamConfig, db_path: &Path) -> Result<usize> {
 
     let count = games.len();
 
-    let conn = rusqlite::Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-    conn.execute_batch("
-        CREATE TABLE IF NOT EXISTS games (
-            appid            INTEGER PRIMARY KEY,
-            name             TEXT,
-            playtime_forever INTEGER,
-            last_played      INTEGER,
-            installed        BOOLEAN
-        );
-    ")?;
+    // Schema is owned by Database::migrate; open through it so migrations run.
+    let db = Database::open(db_path)?;
+    let conn = db.conn();
 
+    let tx = conn.unchecked_transaction()?;
     for g in &games {
         let manifest = config.steamlib.join(format!("appmanifest_{}.acf", g.appid));
         let installed = manifest.exists() as u8;
@@ -286,10 +358,9 @@ pub fn sync_library_to(config: &SteamConfig, db_path: &Path) -> Result<usize> {
     }
 
     // Clear stale installed flags
-    // Note: stmt must be dropped before conn.close(), so we collect first
     let stale_ids: Vec<u32> = {
         let mut stmt = conn.prepare("SELECT appid FROM games WHERE installed=1")?;
-        let ids = stmt.query_map([], |r| r.get(0))?
+        let ids: Vec<u32> = stmt.query_map([], |r| r.get(0))?
             .filter_map(|r| r.ok())
             .collect();
         ids
@@ -305,7 +376,7 @@ pub fn sync_library_to(config: &SteamConfig, db_path: &Path) -> Result<usize> {
         }
     }
 
-    conn.close().map_err(|(_, e)| e)?;
+    tx.commit()?;
     Ok(count)
 }
 
@@ -363,14 +434,13 @@ struct ItadHistoryLow {
     y1:  Option<ItadAmount>,
 }
 
-pub fn fetch_wishlist_sales(config: &SteamConfig) -> Result<Vec<WishlistEntry>> {
+pub fn fetch_wishlist_sales(
+    client: &reqwest::blocking::Client,
+    config: &SteamConfig,
+    db: &Database,
+) -> Result<Vec<WishlistEntry>> {
     let itad_key = config.itad_key.as_ref()
         .ok_or_else(|| anyhow!("ITAD_KEY not set in .env"))?;
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("Failed to build HTTP client")?;
 
     // 1. Fetch wishlist
     let wl: WishlistResponse = client
@@ -384,9 +454,17 @@ pub fn fetch_wishlist_sales(config: &SteamConfig) -> Result<Vec<WishlistEntry>> 
         return Ok(vec![]);
     }
 
-    // 2. Resolve names
+    // 2. Resolve names — prefer the synced library DB to avoid the per-appid
+    //    `appdetails` storm (rate-limits at ~200/day). Wishlist items the user
+    //    doesn't own won't be in the DB; fetch those individually as a fallback.
     let mut names: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
     for &appid in &app_ids {
+        if let Some(name) = db.name_for(appid) {
+            names.insert(appid, name);
+        }
+    }
+    let missing: Vec<u32> = app_ids.iter().copied().filter(|id| !names.contains_key(id)).collect();
+    for appid in &missing {
         let url = format!(
             "https://store.steampowered.com/api/appdetails?appids={}&filters=basic",
             appid
@@ -396,13 +474,13 @@ pub fn fetch_wishlist_sales(config: &SteamConfig) -> Result<Vec<WishlistEntry>> 
                 if let Some(wrapper) = map.get(&appid.to_string()) {
                     if wrapper.success {
                         if let Some(data) = &wrapper.data {
-                            names.insert(appid, data.name.clone());
+                            names.insert(*appid, data.name.clone());
                         }
                     }
                 }
             }
         }
-        names.entry(appid).or_insert_with(|| format!("AppID {}", appid));
+        names.entry(*appid).or_insert_with(|| format!("AppID {}", appid));
     }
 
     // 3. ITAD ID lookup

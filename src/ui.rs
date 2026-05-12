@@ -12,14 +12,128 @@ use ratatui::{
     },
     Frame,
 };
+use std::sync::OnceLock;
 
 // ── Palette ──────────────────────────────────
-const ACCENT:   Color = Color::Cyan;
-const DIM:      Color = Color::DarkGray;
-const OK:       Color = Color::Green;
-const WARN:     Color = Color::Yellow;
-const ERR:      Color = Color::Red;
-const SEL:      Color = Color::Cyan;
+// User-customizable via `~/.config/noguisteam/colors.json` (XDG) or
+// `colors.json` at the project root. Values may be hex (`"#00ffff"`),
+// `"r,g,b"` triples, or ratatui named colors (`"Cyan"`, `"DarkGray"`,
+// `"LightRed"`, etc.). Missing fields fall back to the defaults below.
+
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub accent: Color,
+    pub dim:    Color,
+    pub ok:     Color,
+    pub warn:   Color,
+    pub err:    Color,
+    pub sel:    Color,
+    pub border: Color,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            accent: Color::Cyan,
+            dim:    Color::DarkGray,
+            ok:     Color::Green,
+            warn:   Color::Yellow,
+            err:    Color::Red,
+            sel:    Color::Cyan,
+            border: Color::DarkGray,
+        }
+    }
+}
+
+static PALETTE: OnceLock<Palette> = OnceLock::new();
+
+/// Install the active palette. Safe to call once at startup; further calls are
+/// silently ignored so colors stay consistent for the lifetime of the process.
+pub fn set_palette(p: Palette) { let _ = PALETTE.set(p); }
+
+fn p() -> &'static Palette { PALETTE.get_or_init(Palette::default) }
+fn accent() -> Color { p().accent }
+fn dim()    -> Color { p().dim    }
+fn ok()     -> Color { p().ok     }
+fn warn()   -> Color { p().warn   }
+fn err()    -> Color { p().err    }
+fn sel()    -> Color { p().sel    }
+fn border() -> Color { p().border }
+
+/// Parse a JSON file and produce a `Palette`. Unknown keys are ignored,
+/// missing keys keep their default colors. Returns the default palette if the
+/// file does not exist or cannot be parsed.
+pub fn load_palette_from(path: &std::path::Path) -> Palette {
+    let Ok(text) = std::fs::read_to_string(path) else { return Palette::default(); };
+    let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, String>>(&text) else {
+        return Palette::default();
+    };
+    let mut pal = Palette::default();
+    let pick = |key: &str, fallback: Color| -> Color {
+        map.get(key)
+            .and_then(|s| parse_color(s))
+            .unwrap_or(fallback)
+    };
+    pal.accent = pick("accent", pal.accent);
+    pal.dim    = pick("dim",    pal.dim);
+    pal.ok     = pick("ok",     pal.ok);
+    pal.warn   = pick("warn",   pal.warn);
+    pal.err    = pick("err",    pal.err);
+    pal.sel    = pick("sel",    pal.sel);
+    pal.border = pick("border", pal.border);
+    pal
+}
+
+fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+
+    // Hex: "#rrggbb" or "rrggbb"
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        return Some(Color::Rgb(r, g, b));
+    }
+
+    // "r,g,b"
+    if s.contains(',') {
+        let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+        if parts.len() == 3 {
+            let (Ok(r), Ok(g), Ok(b)) = (parts[0].parse(), parts[1].parse(), parts[2].parse()) else {
+                return None;
+            };
+            return Some(Color::Rgb(r, g, b));
+        }
+    }
+
+    // ANSI palette index ("9", "208")
+    if let Ok(n) = s.parse::<u8>() {
+        return Some(Color::Indexed(n));
+    }
+
+    // Named colors — case-insensitive
+    match s.to_lowercase().as_str() {
+        "reset"        => Some(Color::Reset),
+        "black"        => Some(Color::Black),
+        "red"          => Some(Color::Red),
+        "green"        => Some(Color::Green),
+        "yellow"       => Some(Color::Yellow),
+        "blue"         => Some(Color::Blue),
+        "magenta"      => Some(Color::Magenta),
+        "cyan"         => Some(Color::Cyan),
+        "gray" | "grey" | "white" => Some(Color::White),
+        "darkgray" | "darkgrey"   => Some(Color::DarkGray),
+        "lightred"     => Some(Color::LightRed),
+        "lightgreen"   => Some(Color::LightGreen),
+        "lightyellow"  => Some(Color::LightYellow),
+        "lightblue"    => Some(Color::LightBlue),
+        "lightmagenta" => Some(Color::LightMagenta),
+        "lightcyan"    => Some(Color::LightCyan),
+        _ => None,
+    }
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.size();
@@ -55,10 +169,10 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = Tab::titles().iter().map(|t| Line::from(*t)).collect();
     let tabs = Tabs::new(titles)
         .select(app.active_tab.index())
-        .block(Block::default().borders(Borders::BOTTOM))
-        .highlight_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
+        .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(border())))
+        .highlight_style(Style::default().fg(accent()).add_modifier(Modifier::BOLD))
         .divider("|")
-        .style(Style::default().fg(DIM));
+        .style(Style::default().fg(dim()));
     f.render_widget(tabs, area);
 }
 
@@ -78,8 +192,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let (msg, color): (&str, Color) = match &app.status_msg {
-        Some(s) => (s.as_str(), OK),
-        None    => (keybinds, DIM),
+        Some(s) => (s.as_str(), ok()),
+        None    => (keybinds, dim()),
     };
 
     f.render_widget(Paragraph::new(msg).style(Style::default().fg(color)), area);
@@ -114,21 +228,21 @@ fn draw_game_list(f: &mut Frame, app: &App, area: Rect) {
         format!("🔍 {}", app.search)
     };
     let search_style = if app.search_mode {
-        Style::default().fg(ACCENT)
+        Style::default().fg(accent())
     } else {
-        Style::default().fg(DIM)
+        Style::default().fg(dim())
     };
     f.render_widget(
         Paragraph::new(search_text)
             .style(search_style)
-            .block(Block::default().borders(Borders::ALL).title(" Filter ")),
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Filter ")),
         inner[0],
     );
 
     // Game list
     let items: Vec<ListItem> = app.filtered.iter().map(|&i| {
         let g = &app.games[i];
-        let (icon, icon_color) = if g.installed { ("● ", OK) } else { ("○ ", DIM) };
+        let (icon, icon_color) = if g.installed { ("● ", ok()) } else { ("○ ", dim()) };
         ListItem::new(Line::from(vec![
             Span::styled(icon, Style::default().fg(icon_color)),
             Span::raw(g.name.as_str()),
@@ -142,8 +256,8 @@ fn draw_game_list(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().fg(SEL).add_modifier(Modifier::BOLD))
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(title))
+        .highlight_style(Style::default().fg(sel()).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
@@ -160,7 +274,7 @@ fn draw_game_detail(f: &mut Frame, app: &App, area: Rect) {
 
     // Draw the block border so the image has a visual container
     f.render_widget(
-        Block::default().borders(Borders::ALL).title(" Cover ").style(Style::default().fg(DIM)),
+        Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Cover ").style(Style::default().fg(dim())),
         chunks[0],
     );
 
@@ -168,37 +282,45 @@ fn draw_game_detail(f: &mut Frame, app: &App, area: Rect) {
         None => {
             f.render_widget(
                 Paragraph::new("No game selected.")
-                    .style(Style::default().fg(DIM))
-                    .block(Block::default().borders(Borders::ALL)),
+                    .style(Style::default().fg(dim()))
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border()))),
                 chunks[1],
             );
         }
         Some(g) => {
-            let rows = vec![
+            let mut rows = vec![
                 Row::new(vec![
-                    Cell::from("AppID").style(Style::default().fg(DIM)),
+                    Cell::from("AppID").style(Style::default().fg(dim())),
                     Cell::from(g.app_id.to_string()),
                 ]),
                 Row::new(vec![
-                    Cell::from("Playtime").style(Style::default().fg(DIM)),
-                    Cell::from(g.playtime_fmt()),
+                    Cell::from("Playtime").style(Style::default().fg(dim())),
+                    Cell::from(format_playtime(g.playtime_mins)),
                 ]),
                 Row::new(vec![
-                    Cell::from("Last played").style(Style::default().fg(DIM)),
+                    Cell::from("Last played").style(Style::default().fg(dim())),
                     Cell::from(format_timestamp(g.last_played)),
                 ]),
                 Row::new(vec![
-                    Cell::from("Status").style(Style::default().fg(DIM)),
+                    Cell::from("Status").style(Style::default().fg(dim())),
                     if g.installed {
-                        Cell::from(Span::styled("✅ Installed",     Style::default().fg(OK)))
+                        Cell::from(Span::styled("✅ Installed",     Style::default().fg(ok())))
                     } else {
-                        Cell::from(Span::styled("○  Not installed", Style::default().fg(DIM)))
+                        Cell::from(Span::styled("○  Not installed", Style::default().fg(dim())))
                     },
                 ]),
             ];
+            if g.installed {
+                if let Some(bytes) = crate::steam::game_size_on_disk(&app.steamlib, g.app_id) {
+                    rows.push(Row::new(vec![
+                        Cell::from("Size").style(Style::default().fg(dim())),
+                        Cell::from(crate::steam::human_bytes(bytes)),
+                    ]));
+                }
+            }
 
             let table = Table::new(rows, [Constraint::Length(14), Constraint::Min(0)])
-                .block(Block::default().borders(Borders::ALL).title(format!(" {} ", g.name)));
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(format!(" {} ", g.name)));
             f.render_widget(table, chunks[1]);
         }
     }
@@ -212,8 +334,8 @@ fn draw_wishlist(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new("⏳ Fetching wishlist sales…")
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(ACCENT))
-                .block(Block::default().borders(Borders::ALL).title(" Wishlist ")),
+                .style(Style::default().fg(accent()))
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Wishlist ")),
             area,
         );
         return;
@@ -223,8 +345,8 @@ fn draw_wishlist(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new("Press R to fetch wishlist sales")
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(DIM))
-                .block(Block::default().borders(Borders::ALL).title(" Wishlist ")),
+                .style(Style::default().fg(dim()))
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Wishlist ")),
             area,
         );
         return;
@@ -241,17 +363,17 @@ fn draw_wishlist(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let header = Row::new(vec!["Game", "Deal", "Price", "Regular", "Discount", "Steam Low", "Historic Low"])
-        .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
+        .style(Style::default().fg(accent()).add_modifier(Modifier::BOLD));
 
     let rows: Vec<Row> = app.wishlist.iter().map(|e| {
         Row::new(vec![
             Cell::from(e.name.as_str()),
             Cell::from(Span::styled(e.deal_tag.as_str(), Style::default().fg(deal_color(&e.deal_tag)))),
             Cell::from(format!("{}{:.2}", sym, e.current_price)),
-            Cell::from(format!("{}{:.2}", sym, e.regular_price)).style(Style::default().fg(DIM)),
-            Cell::from(format!("-{}%", e.discount_percent)).style(Style::default().fg(WARN)),
-            Cell::from(e.store_low.map_or_else(|| "N/A".into(), |v| format!("{}{:.2}", sym, v))).style(Style::default().fg(DIM)),
-            Cell::from(e.historical_low.map_or_else(|| "N/A".into(), |v| format!("{}{:.2}", sym, v))).style(Style::default().fg(DIM)),
+            Cell::from(format!("{}{:.2}", sym, e.regular_price)).style(Style::default().fg(dim())),
+            Cell::from(format!("-{}%", e.discount_percent)).style(Style::default().fg(warn())),
+            Cell::from(e.store_low.map_or_else(|| "N/A".into(), |v| format!("{}{:.2}", sym, v))).style(Style::default().fg(dim())),
+            Cell::from(e.historical_low.map_or_else(|| "N/A".into(), |v| format!("{}{:.2}", sym, v))).style(Style::default().fg(dim())),
         ])
     }).collect();
 
@@ -265,9 +387,9 @@ fn draw_wishlist(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Percentage(10),
     ])
     .header(header)
-    .block(Block::default().borders(Borders::ALL)
+    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border()))
         .title(format!(" Wishlist Sales — sorted by {} ({} on sale) ", sort_label, app.wishlist.len())))
-    .highlight_style(Style::default().fg(SEL).add_modifier(Modifier::BOLD))
+    .highlight_style(Style::default().fg(sel()).add_modifier(Modifier::BOLD))
     .highlight_symbol("▶ ");
 
     let mut state = ratatui::widgets::TableState::default();
@@ -299,9 +421,9 @@ fn draw_stat_cards(f: &mut Frame, app: &App, area: Rect) {
     let total_h   = app.games.iter().map(|g| g.playtime_mins as u64).sum::<u64>() / 60;
 
     let cards: [(&str, String, Color); 3] = [
-        (" Total Games ",    total.to_string(),          ACCENT),
-        (" Installed ",      installed.to_string(),       OK),
-        (" Total Playtime ", format!("{}h", total_h),    WARN),
+        (" Total Games ",    total.to_string(),          accent()),
+        (" Installed ",      installed.to_string(),       ok()),
+        (" Total Playtime ", format!("{}h", total_h),    warn()),
     ];
 
     for (i, (title, value, color)) in cards.iter().enumerate() {
@@ -309,7 +431,7 @@ fn draw_stat_cards(f: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(value.as_str())
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(*color).add_modifier(Modifier::BOLD))
-                .block(Block::default().borders(Borders::ALL).title(*title)),
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(*title)),
             cols[i],
         );
     }
@@ -331,17 +453,17 @@ fn draw_stat_charts(f: &mut Frame, app: &App, area: Rect) {
         Bar::default()
             .value(g.playtime_mins as u64 / 60)
             .label(Line::from(label))
-            .style(Style::default().fg(ACCENT))
+            .style(Style::default().fg(accent()))
     }).collect();
 
     f.render_widget(
         BarChart::default()
-            .block(Block::default().borders(Borders::ALL).title(" Top 10 by Playtime (hours) "))
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Top 10 by Playtime (hours) "))
             .data(BarGroup::default().bars(&bar_data))
             .bar_width(3)
             .bar_gap(1)
             .value_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
-            .label_style(Style::default().fg(DIM)),
+            .label_style(Style::default().fg(dim())),
         cols[0],
     );
 
@@ -352,14 +474,14 @@ fn draw_stat_charts(f: &mut Frame, app: &App, area: Rect) {
 
     let items: Vec<ListItem> = recent.iter().map(|g| {
         ListItem::new(Line::from(vec![
-            Span::styled("▸ ", Style::default().fg(ACCENT)),
+            Span::styled("▸ ", Style::default().fg(accent())),
             Span::raw(g.name.as_str()),
         ]))
     }).collect();
 
     f.render_widget(
         List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(" Recently Played "))
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Recently Played "))
             .style(Style::default().fg(Color::White)),
         cols[1],
     );
@@ -376,12 +498,12 @@ fn draw_install_popup(f: &mut Frame, app: &App, area: Rect) {
         InstallState::Running { app_id, output } => (
             format!(" Installing AppID {} ", app_id),
             output.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            ACCENT,
+            accent(),
         ),
         InstallState::Done { app_id, success } => (
             format!(" AppID {} — {} ", app_id, if *success { "Done ✅" } else { "Failed ❌" }),
             vec!["Press any key to close."],
-            if *success { OK } else { ERR },
+            if *success { ok() } else { err() },
         ),
         InstallState::Idle => return,
     };
@@ -395,7 +517,7 @@ fn draw_install_popup(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(display)
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title(title)
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(title)
                 .border_style(Style::default().fg(border_color))),
         popup,
     );
@@ -421,6 +543,12 @@ fn centered_rect(pct_x: u16, pct_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - pct_x) / 2),
         ])
         .split(vert[1])[1]
+}
+
+fn format_playtime(mins: u32) -> String {
+    let h = mins / 60;
+    let m = mins % 60;
+    if h == 0 { format!("{}m", m) } else { format!("{}h {}m", h, m) }
 }
 
 fn format_timestamp(ts: u64) -> String {
@@ -450,10 +578,10 @@ fn is_leap(y: u64) -> bool {
 }
 
 fn deal_color(tag: &str) -> Color {
-    if tag.contains("All-Time")   { ERR  }
+    if tag.contains("All-Time")   { err()  }
     else if tag.contains("Cross") { Color::LightRed }
-    else if tag.contains("Match") { WARN }
-    else                          { OK   }
+    else if tag.contains("Match") { warn() }
+    else                          { ok()   }
 }
 
 fn currency_symbol(country: &str) -> &'static str {
