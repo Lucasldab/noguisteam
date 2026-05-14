@@ -314,6 +314,8 @@ pub fn sync_library_to(client: &reqwest::blocking::Client, config: &SteamConfig,
             ("steamid",                   config.steam_id.as_str()),
             ("include_appinfo",           "true"),
             ("include_played_free_games", "true"),
+            ("include_free_sub",          "true"),
+            ("skip_unvetted_apps",        "false"),
         ])
         .send()
         .context("Steam API request failed")?
