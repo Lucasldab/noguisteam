@@ -143,7 +143,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(area);
 
@@ -179,8 +179,21 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 // ─────────────────────────────────────────────
 // Status bar
 // ─────────────────────────────────────────────
+/// Two lines: the latest status message (blank when there is none), then the
+/// key hints for the current tab, which are always visible.
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let keybinds: &str = match app.active_tab {
+    let keybinds: &str = key_hints(app);
+    let msg = app.status_msg.as_deref().unwrap_or("");
+    let lines = vec![
+        Line::from(Span::styled(format!(" {msg}"), Style::default().fg(ok()))),
+        Line::from(Span::styled(keybinds, Style::default().fg(dim()))),
+    ];
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Key hints for the active tab.
+fn key_hints(app: &App) -> &'static str {
+    match app.active_tab {
         Tab::Library if app.search_mode =>
             " ESC: Cancel search  |  Type to filter",
         Tab::Library =>
@@ -189,14 +202,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             " R: Refresh  |  S: Sort (Deal/Discount/Price)  |  O: Open in browser  |  Tab: Switch  |  Q: Quit",
         Tab::Stats =>
             " Tab: Switch  |  Q: Quit",
-    };
-
-    let (msg, color): (&str, Color) = match &app.status_msg {
-        Some(s) => (s.as_str(), ok()),
-        None    => (keybinds, dim()),
-    };
-
-    f.render_widget(Paragraph::new(msg).style(Style::default().fg(color)), area);
+    }
 }
 
 // ─────────────────────────────────────────────
