@@ -75,6 +75,8 @@ pub struct App {
     pub selected:      usize,        // index into filtered
     pub search:        String,
     pub search_mode:   bool,
+    /// `?` help popup listing every key is open.
+    pub show_help:     bool,
 
     // Install/uninstall
     pub install_state: InstallState,
@@ -119,6 +121,7 @@ impl App {
             selected:         0,
             search:           String::new(),
             search_mode:      false,
+            show_help:        false,
             install_state:    InstallState::Idle,
             wishlist:         Vec::new(),
             wishlist_sel:     0,
