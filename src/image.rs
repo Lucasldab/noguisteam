@@ -188,7 +188,34 @@ fn fetch_header(client: &reqwest::blocking::Client, app_id: u32, dest: &Path) ->
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no variants fetched")))
+
+    // Newer apps keep their art under a hashed path
+    // (store_item_assets/steam/apps/{id}/{hash}/header.jpg) that only the
+    // store API knows; the fixed URLs above 404 for them.
+    match store_header_url(client, app_id).and_then(|url| try_fetch(client, &url, dest)) {
+        Ok(()) => Ok(()),
+        Err(e) => Err(last_err.unwrap_or(e)),
+    }
+}
+
+/// `header_image` from the store's appdetails API.
+fn store_header_url(client: &reqwest::blocking::Client, app_id: u32) -> anyhow::Result<String> {
+    let body: serde_json::Value = client
+        .get("https://store.steampowered.com/api/appdetails")
+        .query(&[("appids", app_id.to_string()), ("filters", "basic".into())])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    header_image_from(&body, app_id)
+        .ok_or_else(|| anyhow::anyhow!("appdetails has no header_image for {app_id}"))
+}
+
+fn header_image_from(body: &serde_json::Value, app_id: u32) -> Option<String> {
+    body.get(app_id.to_string())?
+        .get("data")?
+        .get("header_image")?
+        .as_str()
+        .map(str::to_string)
 }
 
 fn try_fetch(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> anyhow::Result<()> {
@@ -205,4 +232,21 @@ fn try_fetch(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> anyh
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, dest)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_image_is_read_from_appdetails() {
+        let body: serde_json::Value = serde_json::from_str(r#"{"4038320":{"success":true,"data":{
+            "header_image":"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/4038320/5754be/header.jpg?t=1"}}}"#).unwrap();
+        assert_eq!(
+            header_image_from(&body, 4038320).as_deref(),
+            Some("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/4038320/5754be/header.jpg?t=1"),
+        );
+        let missing: serde_json::Value = serde_json::from_str(r#"{"1":{"success":false}}"#).unwrap();
+        assert_eq!(header_image_from(&missing, 1), None);
+    }
 }
