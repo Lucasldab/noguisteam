@@ -160,6 +160,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if matches!(&app.install_state, InstallState::Running { .. } | InstallState::Done { .. }) {
         draw_install_popup(f, app, area);
     }
+    if app.show_help {
+        draw_help(f, area);
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -197,11 +200,11 @@ fn key_hints(app: &App) -> &'static str {
         Tab::Library if app.search_mode =>
             " ESC: Cancel search  |  Type to filter",
         Tab::Library =>
-            " /: Search  |  I: Install  |  U: Uninstall  |  P: Play  |  L: Sync  |  Tab: Switch  |  Q: Quit",
+           " i install · u uninstall · p play · / search · l sync · ? keys",
         Tab::Wishlist =>
-            " R: Refresh  |  S: Sort (Deal/Discount/Price)  |  O: Open in browser  |  Tab: Switch  |  Q: Quit",
+           " r refresh · s sort · o open in browser · ? keys",
         Tab::Stats =>
-            " Tab: Switch  |  Q: Quit",
+           " Tab next tab · ? keys · q quit",
     }
 }
 
@@ -491,6 +494,62 @@ fn draw_stat_charts(f: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().fg(Color::White)),
         cols[1],
     );
+}
+
+// ─────────────────────────────────────────────
+// Help popup (`?`)
+// ─────────────────────────────────────────────
+
+/// Every key, grouped by where it works. Section titles start with `#`.
+const HELP: &[(&str, &str)] = &[
+    ("#", "Everywhere"),
+    ("Tab / Shift+Tab", "next / previous tab"),
+    ("?", "this help (any key closes it)"),
+    ("q", "quit"),
+    ("#", "Library"),
+    ("j / k  ↓ / ↑", "move"),
+    ("/", "search as you type (Enter or Esc to stop)"),
+    ("Esc", "clear the search and the status message"),
+    ("i", "install the selected game (steamcmd)"),
+    ("u", "uninstall the selected game"),
+    ("p", "play (launches through Steam)"),
+    ("l", "sync the library from Steam"),
+    ("#", "Wishlist"),
+    ("j / k  ↓ / ↑", "move"),
+    ("r", "refresh sales from IsThereAnyDeal"),
+    ("s", "sort: best deal → biggest discount → lowest price"),
+    ("o", "open the store page in the browser"),
+    ("#", "Install popup"),
+    ("any key", "close it once the install has finished"),
+];
+
+fn draw_help(f: &mut Frame, area: Rect) {
+    let width = 72.min(area.width);
+    let height = (HELP.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+
+    let lines: Vec<Line> = HELP.iter().map(|(key, what)| {
+        if *key == "#" {
+            Line::from(Span::styled(format!(" {what}"), Style::default().fg(accent()).add_modifier(Modifier::BOLD)))
+        } else {
+            Line::from(vec![
+                Span::styled(format!("   {key:<18}"), Style::default().fg(ok())),
+                Span::raw(*what),
+            ])
+        }
+    }).collect();
+
+    let block = Block::default()
+        .title(" Keys ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent()));
+    f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 // ─────────────────────────────────────────────

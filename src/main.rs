@@ -249,7 +249,7 @@ fn run(
         // ── Render image via chafa AFTER ratatui draw ──
         // chafa writes ANSI escape codes directly to stdout with absolute
         // cursor positioning. We re-render only when the selected game changes.
-        if app.active_tab == Tab::Library && renderer.available {
+        if app.active_tab == Tab::Library && renderer.available && !app.show_help {
             let current_appid = app.selected_game().map(|g| g.app_id);
 
             if current_appid != last_rendered_appid {
@@ -279,6 +279,23 @@ fn run(
         }
 
         if let Event::Key(key) = event::read()? {
+            // Help popup: any key closes it; redraw wipes it and the cover
+            // art (chafa draws outside ratatui) is rendered again.
+            if app.show_help {
+                app.show_help = false;
+                app.needs_clear = true;
+                last_rendered_appid = None;
+                continue;
+            }
+            if key.code == KeyCode::Char('?')
+                && !app.search_mode
+                && !matches!(app.install_state, InstallState::Running { .. })
+            {
+                renderer.clear();
+                app.show_help = true;
+                app.needs_clear = true;
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') if !app.search_mode => {
                     app.should_quit = true;
