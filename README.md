@@ -18,54 +18,57 @@ Built in Rust with [ratatui](https://github.com/ratatui-org/ratatui). Steam clie
 
 ## Requirements
 
-* Linux or macOS
-* [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) on `PATH` (or set `STEAMCMD`)
-* Steam client (for `steam://run/<appid>` launching)
-* Rust toolchain (stable) to build
+* Linux
+* [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) on `PATH` (Arch: AUR `steamcmd`), or set `STEAMCMD`
+* Steam client, logged in (used to launch games and to find your account)
 * Optional: [`chafa`](https://hpjansson.org/chafa/) for cover art in the Library tab
 
 ---
 
-## Build
+## Install
 
 ```bash
-git clone git@github.com:Lucasldab/noguisteam.git
-cd noguisteam
-cargo build --release
+cargo install --locked --git https://github.com/Lucasldab/noguisteam
 ```
-
-Binary: `target/release/noguisteam`.
 
 ---
 
-## Configuration
+## Setup
 
-Copy the template and fill in credentials:
+1. Run `noguisteam`. The first run creates `~/.config/noguisteam/env` (mode 0600) and exits.
+2. Put your [Steam Web API key](https://steamcommunity.com/dev/apikey) in it as `STEAM_API_KEY`.
+   Optionally add an [IsThereAnyDeal key](https://isthereanydeal.com/apps/my/) (`ITAD_KEY`) for wishlist sales.
+3. Run `noguisteam login` once. SteamCMD asks for your password and Steam Guard code
+   and caches the session; installs and uninstalls use it from then on.
+   Your password is never stored or put on a command line.
 
-```bash
-cp .env.example .env
-```
-
-Keys:
+Your Steam ID and login name are read from the local Steam client
+(`~/.steam/steam/config/loginusers.vdf`). Set `STEAM_ID` / `STEAM_USERNAME` in the
+env file to override them. Your Steam profile's game details must be **public** for library sync.
 
 | Key | Purpose |
 | --- | --- |
-| `STEAM_API_KEY` | Steam Web API key ([get one](https://steamcommunity.com/dev/apikey)) |
-| `STEAM_ID` | Your 64-bit SteamID |
-| `STEAM_USERNAME` | Steam login for SteamCMD |
-| `STEAM_PASSWORD` | Steam password (optional; SteamCMD will prompt if unset) |
-| `ITAD_KEY` | IsThereAnyDeal API key — required for wishlist sales ([get one](https://isthereanydeal.com/apps/my/)) |
-| `COUNTRY` | Regional pricing code (e.g. `US`, `DE`, `GB`, `BR`) |
-| `STEAMCMD` | Optional path to `steamcmd` binary |
+| `STEAM_API_KEY` | Steam Web API key (required) |
+| `ITAD_KEY` | IsThereAnyDeal API key — wishlist sales |
+| `COUNTRY` | Regional pricing code (e.g. `US`, `SE`, `BR`); default `US` |
+| `AUTO_SYNC` | `1` to sync the library at every start |
+| `STEAM_ID`, `STEAM_USERNAME` | Override the account found in the Steam client |
+| `STEAMCMD` | Path to `steamcmd` if it is not on `PATH` |
 
-The `.env` is loaded from the project root (resolved from the binary location or `NOGUISTEAM_HOME`). Your Steam profile must be **public** for library sync.
+Environment variables override the file. Data lives in `~/.local/share/noguisteam/`,
+cover art in `~/.cache/noguisteam/`. Colors: copy `colors.example.json` to
+`~/.config/noguisteam/colors.json`.
+
+A checkout that still has a `.env` or `steam_games.db` in its root (the pre-0.2 layout)
+keeps using those files.
 
 ---
 
 ## Usage
 
 ```bash
-./target/release/noguisteam
+noguisteam          # open the TUI
+noguisteam login    # cache the steamcmd login (once, or when it expires)
 ```
 
 ### Global
@@ -94,6 +97,7 @@ The `.env` is loaded from the project root (resolved from the binary location or
 ## Source layout
 
 * `src/main.rs` — entry point, event loop, key dispatch
+* `src/setup.rs` — file locations, first-run settings, `login` command
 * `src/app.rs` — app state (tabs, selection, install state, wishlist)
 * `src/ui.rs` — ratatui rendering
 * `src/steam.rs` — SteamCMD + Steam Web API + ITAD integration

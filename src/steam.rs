@@ -15,10 +15,9 @@ use std::sync::mpsc::Sender;
 pub struct SteamConfig {
     pub api_key:   String,
     pub steam_id:  String,
+    /// steamcmd login name. Its session is cached by `noguisteam login`; no
+    /// password is ever stored or passed on a command line.
     pub username:  String,
-    /// Optional: if unset, steamcmd uses cached credentials from a prior
-    /// interactive `+login user` (preferred — keeps the password off disk).
-    pub password:  Option<String>,
     pub itad_key:  Option<String>,
     pub country:   String,
     pub steamcmd:  PathBuf,
@@ -27,24 +26,29 @@ pub struct SteamConfig {
 }
 
 impl SteamConfig {
-    pub fn from_env() -> Result<Self> {
-        // .env is already loaded by main() via dotenv::from_path — don't reload from CWD
+    /// Build from the environment (main() has already loaded the settings
+    /// file). STEAM_ID and STEAM_USERNAME default to the account the local
+    /// Steam client last logged in with. `settings` names the file in errors.
+    pub fn from_env(settings: &Path) -> Result<Self> {
         let home = std::env::var("HOME").unwrap_or_default();
+        let var = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+        let local = crate::setup::local_steam_account();
+        let missing = |what: &str| anyhow!(
+            "{what} is not set and no Steam client login was found — set it in {}",
+            settings.display()
+        );
 
         Ok(Self {
-            api_key:     std::env::var("STEAM_API_KEY")
-                            .context("STEAM_API_KEY not set in .env")?,
-            steam_id:    std::env::var("STEAM_ID")
-                            .context("STEAM_ID not set in .env")?,
-            username:    std::env::var("STEAM_USERNAME")
-                            .context("STEAM_USERNAME not set in .env")?,
-            password:    std::env::var("STEAM_PASSWORD").ok().filter(|s| !s.is_empty()),
-            itad_key:    std::env::var("ITAD_KEY").ok(),
-            country:     std::env::var("COUNTRY").unwrap_or_else(|_| "US".into()),
-            steamcmd:    PathBuf::from(
-                            std::env::var("STEAMCMD")
-                                .unwrap_or_else(|_| "/usr/bin/steamcmd".into())
-                        ),
+            api_key:     var("STEAM_API_KEY").ok_or_else(|| anyhow!(
+                            "STEAM_API_KEY is empty — get one at https://steamcommunity.com/dev/apikey \
+                             and put it in {}", settings.display()))?,
+            steam_id:    var("STEAM_ID").or_else(|| local.as_ref().map(|l| l.0.clone()))
+                            .ok_or_else(|| missing("STEAM_ID"))?,
+            username:    var("STEAM_USERNAME").or_else(|| local.as_ref().map(|l| l.1.clone()))
+                            .ok_or_else(|| missing("STEAM_USERNAME"))?,
+            itad_key:    var("ITAD_KEY"),
+            country:     var("COUNTRY").unwrap_or_else(|| "US".into()),
+            steamcmd:    PathBuf::from(var("STEAMCMD").unwrap_or_else(|| "steamcmd".into())),
             steamlib:    PathBuf::from(format!("{}/.steam/steam/steamapps", home)),
             auto_sync:   matches!(
                 std::env::var("AUTO_SYNC").unwrap_or_default().to_lowercase().as_str(),
@@ -54,14 +58,35 @@ impl SteamConfig {
     }
 }
 
-/// Build the steamcmd `+login` arguments. Omits the password when not set so
-/// steamcmd uses its cached session instead.
+/// What `noguisteam login` needs: the steamcmd binary and the login name
+/// (STEAM_USERNAME, else the local Steam client's account). No API key.
+pub fn login_target(settings: &Path) -> Result<(PathBuf, String)> {
+    let var = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+    let username = var("STEAM_USERNAME")
+        .or_else(|| crate::setup::local_steam_account().map(|l| l.1))
+        .ok_or_else(|| anyhow!(
+            "STEAM_USERNAME is not set and no Steam client login was found — set it in {}",
+            settings.display()
+        ))?;
+    Ok((PathBuf::from(var("STEAMCMD").unwrap_or_else(|| "steamcmd".into())), username))
+}
+
+/// steamcmd `+login` arguments: the user name only, so steamcmd uses the
+/// session cached by `noguisteam login`. stdin is closed, so a missing cache
+/// fails instead of hanging on a password prompt.
 fn login_args(config: &SteamConfig) -> Vec<String> {
-    let mut v = vec!["+login".to_string(), config.username.clone()];
-    if let Some(pw) = &config.password {
-        v.push(pw.clone());
-    }
-    v
+    vec!["+login".to_string(), config.username.clone()]
+}
+
+/// Shown when steamcmd fails: the usual cause is no cached login yet.
+const LOGIN_HINT: &str = "if steamcmd needs to log in, run `noguisteam login` in a terminal once";
+
+/// Error for a steamcmd that could not be started.
+fn launch_error(config: &SteamConfig) -> String {
+    format!(
+        "could not run {} — install steamcmd (Arch: AUR `steamcmd`) or set STEAMCMD",
+        config.steamcmd.display()
+    )
 }
 
 /// Bytes free on the filesystem holding `path`. Uses `df -B1` to avoid pulling
@@ -206,8 +231,8 @@ fn restart_steam_if_running(tx: &Sender<String>) {
 }
 
 /// Runs steamcmd for install, sending each line of output to `tx` as it arrives.
-/// Password is passed to avoid interactive login prompts. Steam Guard may still
-/// require confirmation via the mobile app (SteamCMD waits automatically).
+/// Uses the cached login; Steam Guard may still ask for confirmation in the
+/// mobile app (steamcmd waits for it).
 pub fn install_game(
     app_id: u32,
     config: &SteamConfig,
@@ -223,11 +248,11 @@ pub fn install_game(
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()
-        .context("Failed to launch steamcmd")?;
+        .with_context(|| launch_error(config))?;
 
     if let Some(stdout) = child.stdout.take() {
         use std::io::{BufRead, BufReader};
-        for line in BufReader::new(stdout).lines().flatten() {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let cleaned = sanitize_line(&line);
             if !cleaned.is_empty() {
                 let _ = tx.send(cleaned);
@@ -237,7 +262,7 @@ pub fn install_game(
 
     let status = child.wait()?;
     if !status.success() {
-        return Err(anyhow!("steamcmd exited with status {}", status));
+        return Err(anyhow!("steamcmd exited with {status} — {LOGIN_HINT}"));
     }
 
     // Re-check manifest after install
@@ -266,10 +291,10 @@ pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database) -> Resul
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .status()
-        .context("Failed to launch steamcmd for uninstall")?;
+        .with_context(|| launch_error(config))?;
 
     if !status.success() {
-        return Err(anyhow!("steamcmd app_uninstall failed with status {}", status));
+        return Err(anyhow!("steamcmd app_uninstall exited with {status} — {LOGIN_HINT}"));
     }
 
     // steamcmd removes the files and manifest itself.
@@ -510,7 +535,7 @@ pub fn fetch_wishlist_sales(
 
     let itad_to_steam: std::collections::HashMap<String, u32> = steam_to_itad
         .iter()
-        .map(|(&ref k, v)| (v.clone(), *k))
+        .map(|(k, v)| (v.clone(), *k))
         .collect();
 
     let itad_ids: Vec<String> = steam_to_itad.values().cloned().collect();
@@ -591,14 +616,52 @@ fn classify_deal(
     hist_low:     Option<f64>,
     one_year_low: Option<f64>,
 ) -> String {
-    if store_low.map_or(false, |l| current <= l) {
+    if store_low.is_some_and(|l| current <= l) {
         return "🔥 Steam All-Time Low".into();
     }
-    if hist_low.map_or(false, |l| current <= l) {
+    if hist_low.is_some_and(|l| current <= l) {
         return "🏆 Cross-Store Low".into();
     }
-    if one_year_low.map_or(false, |l| current <= l) {
+    if one_year_low.is_some_and(|l| current <= l) {
         return "🔁 Matching Lowest".into();
     }
     "🏷  On Sale".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> SteamConfig {
+        SteamConfig {
+            api_key: "k".into(), steam_id: "1".into(), username: "me".into(),
+            itad_key: None, country: "US".into(), steamcmd: "steamcmd".into(),
+            steamlib: PathBuf::from("/nonexistent"), auto_sync: false,
+        }
+    }
+
+    #[test]
+    fn login_never_passes_a_password() {
+        assert_eq!(login_args(&config()), ["+login", "me"]);
+    }
+
+    #[test]
+    fn sanitize_keeps_last_progress_frame_without_escapes() {
+        let raw = " Update state (0x61) downloading, progress: 1.00\r\x1b[0m Update state (0x61) downloading, progress: 42.17\t(1 / 2)";
+        assert_eq!(sanitize_line(raw), "Update state (0x61) downloading, progress: 42.17 (1 / 2)");
+    }
+
+    #[test]
+    fn acf_size_is_read_from_manifest() {
+        let acf = "\"AppState\"\n{\n\t\"appid\"\t\t\"570\"\n\t\"SizeOnDisk\"\t\t\"123456789\"\n}\n";
+        assert_eq!(parse_acf_size(acf), Some(123_456_789));
+        assert_eq!(parse_acf_size("\"AppState\"\n{\n}\n"), None);
+    }
+
+    #[test]
+    fn human_bytes_units() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1536), "1.5 KB");
+        assert_eq!(human_bytes(10 * 1024u64.pow(3)), "10.0 GB");
+    }
 }
