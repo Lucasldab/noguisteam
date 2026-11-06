@@ -62,6 +62,16 @@ pub struct WishlistEntry {
     pub url:              String,   // Steam store page URL
 }
 
+impl WishlistEntry {
+    /// Money saved (regular − current) weighted by the discount fraction, so
+    /// a large saving at a deep discount ranks above the same saving on a
+    /// small markdown of an expensive game.
+    pub fn deal_score(&self) -> f64 {
+        let saved = (self.regular_price - self.current_price).max(0.0);
+        saved * f64::from(self.discount_percent) / 100.0
+    }
+}
+
 // ─────────────────────────────────────────────
 // App state
 // ─────────────────────────────────────────────
@@ -104,6 +114,7 @@ pub struct App {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WishlistSort {
+    /// Biggest saving weighted by discount: see `WishlistEntry::deal_score`.
     Deal,
     Discount,
     Price,

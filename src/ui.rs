@@ -517,7 +517,7 @@ const HELP: &[(&str, &str)] = &[
     ("#", "Wishlist"),
     ("j / k  ↓ / ↑", "move"),
     ("r", "refresh sales from IsThereAnyDeal"),
-    ("s", "sort: best deal → biggest discount → lowest price"),
+    ("s", "sort: saving × discount % → discount → price"),
     ("o", "open the store page in the browser"),
     ("#", "Install popup"),
     ("any key", "close it once the install has finished"),
