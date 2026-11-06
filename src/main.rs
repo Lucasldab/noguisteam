@@ -573,15 +573,13 @@ fn sort_wishlist(app: &mut App) {
 
 fn sort_wishlist_entries(entries: &mut [app::WishlistEntry], sort: &WishlistSort) {
     match sort {
-        WishlistSort::Deal     => entries.sort_by(|a, b| deal_order(&a.deal_tag).cmp(&deal_order(&b.deal_tag)).then(a.current_price.total_cmp(&b.current_price))),
+        WishlistSort::Deal     => entries.sort_by(|a, b| b.deal_score().total_cmp(&a.deal_score())
+                                      .then(b.discount_percent.cmp(&a.discount_percent))),
         WishlistSort::Discount => entries.sort_by_key(|e| std::cmp::Reverse(e.discount_percent)),
         WishlistSort::Price    => entries.sort_by(|a, b| a.current_price.total_cmp(&b.current_price)),
     }
 }
 
-fn deal_order(tag: &str) -> u8 {
-    if tag.contains("All-Time") { 0 } else if tag.contains("Cross") { 1 } else if tag.contains("Match") { 2 } else { 3 }
-}
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -593,3 +591,28 @@ fn xdg_config_path(file: &str) -> Option<PathBuf> {
     Some(base.join("noguisteam").join(file))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, regular: f64, current: f64, pct: u32) -> app::WishlistEntry {
+        app::WishlistEntry {
+            name: name.into(), current_price: current, regular_price: regular,
+            discount_percent: pct, deal_tag: String::new(), store_low: None,
+            historical_low: None, url: String::new(),
+        }
+    }
+
+    #[test]
+    fn deal_sort_ranks_saving_weighted_by_discount() {
+        let mut v = vec![
+            entry("small markdown, pricey", 300.0, 240.0, 20), // saves 60 × 0.20 = 12
+            entry("deep cut, cheap",         40.0,   8.0, 80), // saves 32 × 0.80 = 25.6
+            entry("big saving, deep",       200.0,  50.0, 75), // saves 150 × 0.75 = 112.5
+            entry("not on sale",            100.0, 100.0,  0), // 0
+        ];
+        sort_wishlist_entries(&mut v, &WishlistSort::Deal);
+        let names: Vec<&str> = v.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["big saving, deep", "deep cut, cheap", "small markdown, pricey", "not on sale"]);
+    }
+}
