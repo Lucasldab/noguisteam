@@ -3,6 +3,7 @@
 mod app;
 mod db;
 mod image;
+mod setup;
 mod steam;
 mod ui;
 
@@ -17,34 +18,73 @@ use image::ImageRenderer;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     thread,
     time::Duration,
 };
 
+const USAGE: &str = "\
+Usage: noguisteam [login]
+
+  (no command)  open the TUI
+  login         log steamcmd in once (asks for password + Steam Guard);
+                installs and uninstalls then use the cached session
+
+Settings: ~/.config/noguisteam/env (created on first run)
+";
+
 fn main() -> anyhow::Result<()> {
-    // Resolve project root FIRST, then load .env from it.
-    // dotenv::dotenv() loads from CWD which is wrong when run from ~.
-    let project_root = project_root();
-    dotenv::from_path(project_root.join(".env")).ok();
-    let config = steam::SteamConfig::from_env()?;
-    let db_path      = project_root.join("steam_games.db");
+    let cmd = std::env::args().nth(1);
+    if matches!(cmd.as_deref(), Some("-h" | "--help" | "help")) {
+        print!("{USAGE}");
+        return Ok(());
+    }
+
+    let paths = setup::Paths::resolve();
+    if setup::write_env_template(&paths.env_file)? {
+        println!("Created {} — put your Steam Web API key in it", paths.env_file.display());
+        println!("(https://steamcommunity.com/dev/apikey), then run noguisteam again.");
+        return Ok(());
+    }
+    setup::make_private(&paths.env_file);
+    // Real environment variables win over the file.
+    dotenv::from_path(&paths.env_file).ok();
+    if std::env::var_os("STEAM_PASSWORD").is_some() {
+        eprintln!("note: STEAM_PASSWORD is ignored — run `noguisteam login` once instead, and remove it from {}",
+                  paths.env_file.display());
+    }
+
+    match cmd.as_deref() {
+        None => {}
+        Some("login") => {
+            let (steamcmd, username) = steam::login_target(&paths.env_file)?;
+            return setup::login(&steamcmd, &username);
+        }
+        Some(other) => anyhow::bail!("unknown command `{other}`\n\n{USAGE}"),
+    }
+
+    let config = steam::SteamConfig::from_env(&paths.env_file)?;
+    if let Some(dir) = paths.db.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let db_path      = paths.db.clone();
     let db           = Database::open(&db_path)?;
 
     // ── Color palette ─────────────────────────
-    // Prefer ~/.config/noguisteam/colors.json (XDG); fall back to project-root
-    // colors.json. Missing files use the built-in palette.
+    // Prefer ~/.config/noguisteam/colors.json (XDG); fall back to an old
+    // checkout's colors.json. Missing files use the built-in palette.
     let palette_path = xdg_config_path("colors.json")
         .filter(|p| p.exists())
-        .unwrap_or_else(|| project_root.join("colors.json"));
+        .or_else(|| paths.legacy.as_ref().map(|r| r.join("colors.json")))
+        .unwrap_or_default();
     ui::set_palette(ui::load_palette_from(&palette_path));
 
     // One shared HTTP client (connection pool, gzip, timeouts) used for
     // every Steam/ITAD/CDN request in the app.
     let http = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("noguisteam/0.1")
+        .user_agent(concat!("noguisteam/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let mut app  = App::new(&db, config.steamlib.clone())?;
@@ -87,7 +127,7 @@ fn run(
     term:     &mut Terminal<CrosstermBackend<io::Stdout>>,
     app:      &mut App,
     db:       &Database,
-    db_path:  &PathBuf,
+    db_path:  &Path,
     config:   &steam::SteamConfig,
     renderer: &ImageRenderer,
     http:     &reqwest::blocking::Client,
@@ -112,7 +152,7 @@ fn run(
             let cfg    = config.clone();
             let tx     = wishlist_tx.clone();
             let client = http.clone();
-            let db_p   = db_path.clone();
+            let db_p   = db_path.to_path_buf();
             thread::spawn(move || {
                 let result = (|| -> Result<Vec<WishlistEntry>, String> {
                     let db2 = Database::open(&db_p).map_err(|e| e.to_string())?;
@@ -130,7 +170,7 @@ fn run(
     if config.auto_sync && !app.sync_loading {
         app.sync_loading = true;
         app.set_status("Auto-syncing library…");
-        let db_p   = db_path.clone();
+        let db_p   = db_path.to_path_buf();
         let cfg    = config.clone();
         let tx     = sync_tx.clone();
         let client = http.clone();
@@ -259,7 +299,7 @@ fn run(
             if app.should_quit { break; }
 
             match app.active_tab {
-                Tab::Library  => handle_library(key, app, db_path, config, install_tx.clone(), sync_tx.clone(), http, &renderer, &mut last_rendered_appid),
+                Tab::Library  => handle_library(key, app, db_path, config, install_tx.clone(), sync_tx.clone(), http, renderer, &mut last_rendered_appid),
                 Tab::Wishlist => handle_wishlist(key, app, config, db_path, http, wishlist_tx.clone()),
                 Tab::Stats    => {}
             }
@@ -273,10 +313,11 @@ fn run(
 // ─────────────────────────────────────────────
 // Library key handling
 // ─────────────────────────────────────────────
+#[allow(clippy::too_many_arguments)]
 fn handle_library(
     key:              crossterm::event::KeyEvent,
     app:              &mut App,
-    db_path:          &PathBuf,
+    db_path:          &Path,
     config:           &steam::SteamConfig,
     install_tx:       mpsc::Sender<String>,
     sync_tx:          mpsc::Sender<Result<usize, String>>,
@@ -316,7 +357,7 @@ fn handle_library(
                 }
                 let app_id     = game.app_id;
                 let tx         = install_tx.clone();
-                let db_p       = db_path.clone();
+                let db_p       = db_path.to_path_buf();
                 let cfg_clone  = config.clone();
 
                 let mut startup = vec![format!("Starting install for {}…", game.name)];
@@ -355,7 +396,7 @@ fn handle_library(
                     return;
                 }
                 let app_id    = game.app_id;
-                let db_p      = db_path.clone();
+                let db_p      = db_path.to_path_buf();
                 let name      = game.name.clone();
                 let tx        = install_tx.clone();
                 let cfg_clone = config.clone();
@@ -396,7 +437,7 @@ fn handle_library(
             app.sync_loading = true;
             app.set_status("Syncing library… (you can keep using the UI)".to_string());
 
-            let db_p      = db_path.clone();
+            let db_p      = db_path.to_path_buf();
             let cfg_clone = config.clone();
             let tx        = sync_tx.clone();
             let client    = http.clone();
@@ -428,7 +469,7 @@ fn handle_wishlist(
     key: crossterm::event::KeyEvent,
     app: &mut App,
     config: &steam::SteamConfig,
-    db_path: &PathBuf,
+    db_path: &Path,
     http: &reqwest::blocking::Client,
     wishlist_tx: mpsc::Sender<Result<Vec<WishlistEntry>, String>>,
 ) {
@@ -485,7 +526,7 @@ fn handle_wishlist(
             let cfg      = config.clone();
             let tx       = wishlist_tx.clone();
             let client   = http.clone();
-            let db_p     = db_path.clone();
+            let db_p     = db_path.to_path_buf();
             thread::spawn(move || {
                 let result = (|| -> Result<Vec<WishlistEntry>, String> {
                     let db2 = Database::open(&db_p).map_err(|e| e.to_string())?;
@@ -513,10 +554,10 @@ fn sort_wishlist(app: &mut App) {
     app.wishlist_sel = 0;
 }
 
-fn sort_wishlist_entries(entries: &mut Vec<app::WishlistEntry>, sort: &WishlistSort) {
+fn sort_wishlist_entries(entries: &mut [app::WishlistEntry], sort: &WishlistSort) {
     match sort {
         WishlistSort::Deal     => entries.sort_by(|a, b| deal_order(&a.deal_tag).cmp(&deal_order(&b.deal_tag)).then(a.current_price.total_cmp(&b.current_price))),
-        WishlistSort::Discount => entries.sort_by(|a, b| b.discount_percent.cmp(&a.discount_percent)),
+        WishlistSort::Discount => entries.sort_by_key(|e| std::cmp::Reverse(e.discount_percent)),
         WishlistSort::Price    => entries.sort_by(|a, b| a.current_price.total_cmp(&b.current_price)),
     }
 }
@@ -535,20 +576,3 @@ fn xdg_config_path(file: &str) -> Option<PathBuf> {
     Some(base.join("noguisteam").join(file))
 }
 
-fn project_root() -> PathBuf {
-    if let Ok(home) = std::env::var("NOGUISTEAM_HOME") {
-        let p = PathBuf::from(home);
-        if p.join(".env").exists() || p.join("steam_games.db").exists() {
-            return p;
-        }
-    }
-    let exe = std::env::current_exe().unwrap_or_default();
-    let mut dir = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
-    for _ in 0..6 {
-        if dir.join("steam_games.db").exists() || dir.join(".env").exists() {
-            return dir;
-        }
-        if let Some(p) = dir.parent() { dir = p.to_path_buf(); } else { break; }
-    }
-    std::env::current_dir().unwrap_or_default()
-}

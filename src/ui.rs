@@ -445,7 +445,7 @@ fn draw_stat_charts(f: &mut Frame, app: &App, area: Rect) {
 
     // Top 10 most played bar chart
     let mut top: Vec<&Game> = app.games.iter().collect();
-    top.sort_by(|a, b| b.playtime_mins.cmp(&a.playtime_mins));
+    top.sort_by_key(|g| std::cmp::Reverse(g.playtime_mins));
     top.truncate(10);
 
     let bar_data: Vec<Bar> = top.iter().map(|g| {
@@ -469,7 +469,7 @@ fn draw_stat_charts(f: &mut Frame, app: &App, area: Rect) {
 
     // Recently played list
     let mut recent: Vec<&Game> = app.games.iter().filter(|g| g.last_played > 0).collect();
-    recent.sort_by(|a, b| b.last_played.cmp(&a.last_played));
+    recent.sort_by_key(|g| std::cmp::Reverse(g.last_played));
     recent.truncate(15);
 
     let items: Vec<ListItem> = recent.iter().map(|g| {
@@ -574,7 +574,7 @@ fn format_timestamp(ts: u64) -> String {
 }
 
 fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 fn deal_color(tag: &str) -> Color {
