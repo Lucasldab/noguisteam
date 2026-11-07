@@ -1,5 +1,6 @@
 // ui.rs — Ratatui rendering
 
+use crate::cover::ImageRenderer;
 use crate::app::{App, InstallState, Tab, WishlistSort};
 use crate::db::Game;
 use ratatui::{
@@ -135,8 +136,8 @@ fn parse_color(s: &str) -> Option<Color> {
     }
 }
 
-pub fn draw(f: &mut Frame, app: &App) {
-    let area = f.size();
+pub fn draw(f: &mut Frame, app: &App, covers: &mut ImageRenderer) {
+    let area = f.area();
 
     let root = Layout::default()
         .direction(Direction::Vertical)
@@ -150,7 +151,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tabs(f, app, root[0]);
 
     match app.active_tab {
-        Tab::Library  => draw_library(f, app, root[1]),
+        Tab::Library  => draw_library(f, app, covers, root[1]),
         Tab::Wishlist => draw_wishlist(f, app, root[1]),
         Tab::Stats    => draw_stats(f, app, root[1]),
     }
@@ -211,15 +212,15 @@ fn key_hints(app: &App) -> &'static str {
 // ─────────────────────────────────────────────
 // Library tab
 // ─────────────────────────────────────────────
-fn draw_library(f: &mut Frame, app: &App, area: Rect) {
-    // Detail panel is fixed at 48 cols (46 image cols + 2 border), matching 460px @ 10px/cell
+fn draw_library(f: &mut Frame, app: &App, covers: &mut ImageRenderer, area: Rect) {
+    // Detail panel is fixed at 48 cols (46 image cols + 2 border)
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(48)])
         .split(area);
 
     draw_game_list(f, app, chunks[0]);
-    draw_game_detail(f, app, chunks[1]);
+    draw_game_detail(f, app, covers, chunks[1]);
 }
 
 fn draw_game_list(f: &mut Frame, app: &App, area: Rect) {
@@ -274,18 +275,20 @@ fn draw_game_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, inner[1], &mut state);
 }
 
-fn draw_game_detail(f: &mut Frame, app: &App, area: Rect) {
-    // Cover block: 11 rows = 9 image cells + 2 border rows (460x215px @ 10x23px/cell)
+fn draw_game_detail(f: &mut Frame, app: &App, covers: &mut ImageRenderer, area: Rect) {
+    // Cover block: 11 rows = 9 image cells + 2 border rows
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(11), Constraint::Min(0)])
         .split(area);
 
     // Draw the block border so the image has a visual container
-    f.render_widget(
-        Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Cover ").style(Style::default().fg(dim())),
-        chunks[0],
-    );
+    let cover_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(border())).title(" Cover ").style(Style::default().fg(dim()));
+    let cover_area  = cover_block.inner(chunks[0]);
+    f.render_widget(cover_block, chunks[0]);
+    if let Some(g) = app.selected_game() {
+        covers.render(f, g.app_id, cover_area);
+    }
 
     match app.selected_game() {
         None => {
@@ -398,7 +401,7 @@ fn draw_wishlist(f: &mut Frame, app: &App, area: Rect) {
     .header(header)
     .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border()))
         .title(format!(" Wishlist Sales — sorted by {} ({} on sale) ", sort_label, app.wishlist.len())))
-    .highlight_style(Style::default().fg(sel()).add_modifier(Modifier::BOLD))
+    .row_highlight_style(Style::default().fg(sel()).add_modifier(Modifier::BOLD))
     .highlight_symbol("▶ ");
 
     let mut state = ratatui::widgets::TableState::default();

@@ -21,7 +21,6 @@ Built in Rust with [ratatui](https://github.com/ratatui-org/ratatui). Steam clie
 * Linux
 * [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD) on `PATH` (Arch: AUR `steamcmd`), or set `STEAMCMD`
 * Steam client, logged in (used to launch games and to find your account)
-* Optional: [`chafa`](https://hpjansson.org/chafa/) for cover art in the Library tab
 
 ---
 
@@ -102,7 +101,7 @@ noguisteam login    # cache the steamcmd login (once, or when it expires)
 * `src/ui.rs` — ratatui rendering
 * `src/steam.rs` — SteamCMD + Steam Web API + ITAD integration
 * `src/db.rs` — SQLite cache
-* `src/image.rs` — cover art rendering via `chafa`
+* `src/cover.rs` — cover art download/cache + in-layout rendering via `ratatui-image`
 
 ---
 

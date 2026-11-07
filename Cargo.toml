@@ -1,6 +1,6 @@
 [package]
 name = "noguisteam"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Terminal UI for a Steam library: install, uninstall, launch and watch wishlist sales via SteamCMD"
 license = "MIT"
@@ -16,8 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 # TUI
-ratatui        = "0.27"
-crossterm      = "0.27"
+ratatui        = "0.30"
+crossterm      = "0.29"
+ratatui-image  = { version = "11.1", default-features = false, features = ["crossterm", "image-defaults"] }
+image          = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 # Database
 rusqlite       = { version = "0.31", features = ["bundled"] }

@@ -1,8 +1,8 @@
 // main.rs — Entry point, event loop
 
 mod app;
+mod cover;
 mod db;
-mod image;
 mod setup;
 mod steam;
 mod ui;
@@ -14,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use db::Database;
-use image::ImageRenderer;
+use cover::ImageRenderer;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
     io,
@@ -88,7 +88,12 @@ fn main() -> anyhow::Result<()> {
         .build()?;
 
     let mut app  = App::new(&db, config.steamlib.clone())?;
-    let renderer = ImageRenderer::new(http.clone());
+
+    // Query the terminal's graphics protocol before raw mode / alt screen.
+    let picker = ratatui_image::picker::Picker::from_query_stdio()
+        .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
+    let _ = io::Write::flush(&mut io::stdout());
+    let mut renderer = ImageRenderer::new(http.clone(), picker);
 
     // Restore terminal on panic so the user sees a usable shell + panic message
     let original_hook = std::panic::take_hook();
@@ -108,7 +113,7 @@ fn main() -> anyhow::Result<()> {
     let backend  = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
-    let result = run(&mut term, &mut app, &db, &db_path, &config, &renderer, &http);
+    let result = run(&mut term, &mut app, &db, &db_path, &config, &mut renderer, &http);
 
     disable_raw_mode()?;
     execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
@@ -129,14 +134,13 @@ fn run(
     db:       &Database,
     db_path:  &Path,
     config:   &steam::SteamConfig,
-    renderer: &ImageRenderer,
+    renderer: &mut ImageRenderer,
     http:     &reqwest::blocking::Client,
 ) -> anyhow::Result<()> {
 
     let (install_tx, install_rx)   = mpsc::channel::<String>();
     let (wishlist_tx, wishlist_rx) = mpsc::channel::<Result<Vec<WishlistEntry>, String>>();
     let (sync_tx, sync_rx)         = mpsc::channel::<Result<usize, String>>();
-    let mut last_rendered_appid: Option<u32> = None;
 
     // ── Hydrate wishlist from on-disk cache; auto-refresh if stale (>6h) ──
     const WISHLIST_TTL_SECS: u64 = 6 * 3600;
@@ -232,11 +236,6 @@ fn run(
             }
         }
 
-        // ── Drain image-fetch completions so the next paint picks up new cache hits
-        let mut image_ready = false;
-        while renderer.done_rx.try_recv().is_ok() { image_ready = true; }
-        if image_ready { last_rendered_appid = None; }
-
         // ── Force full redraw if flagged ─────
         if app.needs_clear {
             app.needs_clear = false;
@@ -244,34 +243,7 @@ fn run(
         }
 
         // ── Draw TUI ─────────────────────────
-        term.draw(|f| ui::draw(f, app))?;
-
-        // ── Render image via chafa AFTER ratatui draw ──
-        // chafa writes ANSI escape codes directly to stdout with absolute
-        // cursor positioning. We re-render only when the selected game changes.
-        if app.active_tab == Tab::Library && renderer.available && !app.show_help {
-            let current_appid = app.selected_game().map(|g| g.app_id);
-
-            if current_appid != last_rendered_appid {
-                renderer.clear();
-                if let Some(game) = app.selected_game() {
-                    let area = term.size().unwrap_or_default();
-                    // Detail panel is fixed at 48 cols (right edge of terminal).
-                    // Image is 46 cols wide (460px @ 10px/cell), starts 1 col in from border.
-                    // col/row are 1-based for ANSI cursor positioning.
-                    let col = area.width.saturating_sub(48) + 2; // panel start + border + 1-based
-                    let row = 5u16; // tab bar (3) + border (1) + 1-based offset
-                    let img_w = 46u16;
-                    let img_h = 9u16;
-
-                    renderer.render(game.app_id, col, row, img_w, img_h);
-                }
-                last_rendered_appid = current_appid;
-            }
-        } else if app.active_tab != Tab::Library && last_rendered_appid.is_some() {
-            renderer.clear();
-            last_rendered_appid = None;
-        }
+        term.draw(|f| ui::draw(f, app, renderer))?;
 
         // ── Poll events ──────────────────────
         if !event::poll(Duration::from_millis(100))? {
@@ -279,21 +251,16 @@ fn run(
         }
 
         if let Event::Key(key) = event::read()? {
-            // Help popup: any key closes it; redraw wipes it and the cover
-            // art (chafa draws outside ratatui) is rendered again.
+            // Help popup: any key closes it.
             if app.show_help {
                 app.show_help = false;
-                app.needs_clear = true;
-                last_rendered_appid = None;
                 continue;
             }
             if key.code == KeyCode::Char('?')
                 && !app.search_mode
                 && !matches!(app.install_state, InstallState::Running { .. })
             {
-                renderer.clear();
                 app.show_help = true;
-                app.needs_clear = true;
                 continue;
             }
             match key.code {
@@ -301,13 +268,9 @@ fn run(
                     app.should_quit = true;
                 }
                 KeyCode::Tab => {
-                    renderer.clear();
-                    app.needs_clear = true;
                     app.next_tab();
                 }
                 KeyCode::BackTab => {
-                    renderer.clear();
-                    app.needs_clear = true;
                     app.prev_tab();
                 }
                 _ => {}
@@ -316,14 +279,13 @@ fn run(
             if app.should_quit { break; }
 
             match app.active_tab {
-                Tab::Library  => handle_library(key, app, db_path, config, install_tx.clone(), sync_tx.clone(), http, renderer, &mut last_rendered_appid),
+                Tab::Library  => handle_library(key, app, db_path, config, install_tx.clone(), sync_tx.clone(), http),
                 Tab::Wishlist => handle_wishlist(key, app, config, db_path, http, wishlist_tx.clone()),
                 Tab::Stats    => {}
             }
         }
     }
 
-    renderer.clear();
     Ok(())
 }
 
@@ -339,8 +301,6 @@ fn handle_library(
     install_tx:       mpsc::Sender<String>,
     sync_tx:          mpsc::Sender<Result<usize, String>>,
     http:             &reqwest::blocking::Client,
-    renderer:         &ImageRenderer,
-    last_appid:       &mut Option<u32>,
 ) {
     if app.search_mode {
         match key.code {
@@ -354,13 +314,9 @@ fn handle_library(
 
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
-            renderer.clear();
-            *last_appid = None;
             app.move_up();
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            renderer.clear();
-            *last_appid = None;
             app.move_down();
         }
         KeyCode::Char('/') => {
@@ -471,9 +427,6 @@ fn handle_library(
         // Dismiss install popup on any key
         _ if matches!(&app.install_state, InstallState::Done { .. }) => {
             app.install_state = InstallState::Idle;
-            renderer.clear();
-            *last_appid = None;
-            app.needs_clear = true;
         }
         _ => {}
     }

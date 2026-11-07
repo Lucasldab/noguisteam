@@ -1,83 +1,72 @@
-// image.rs — Terminal image rendering via chafa
+// image.rs — Cover art: download/cache plus in-layout rendering via ratatui-image
 //
-// Why chafa instead of kitty icat?
-// The app runs inside tmux (TERM=tmux-256color). tmux intercepts and corrupts
-// the kitty graphics protocol escape sequences. chafa auto-detects the best
-// protocol the terminal stack supports (sixel, unicode half-blocks, braille)
-// and works correctly through tmux.
-//
-// Install: sudo apt install chafa  OR  brew install chafa
+// ratatui-image picks the best protocol the terminal supports (kitty, sixel,
+// iTerm2, or unicode half-blocks) and handles tmux passthrough, so the cover
+// is an ordinary widget drawn inside the ratatui layout.
 
+use ratatui::{layout::Rect, Frame};
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 pub struct ImageRenderer {
-    pub available: bool,
+    picker:    Picker,
     cache_dir: PathBuf,
-    current:   std::cell::Cell<Option<u32>>,
+    /// AppID and protocol of the cover currently on screen.
+    current:   Option<(u32, StatefulProtocol)>,
     client:    reqwest::blocking::Client,
     /// AppIDs we've already determined have no usable artwork. Avoids
     /// hammering the CDN every frame for genuinely-missing games.
     failed:    Arc<Mutex<HashSet<u32>>>,
     /// AppIDs currently being downloaded in a background worker thread.
     in_flight: Arc<Mutex<HashSet<u32>>>,
-    /// Worker → render-loop notification channel. Each `()` means a fetch
-    /// finished — the caller checks `path.exists()` and re-renders.
-    done_tx:   mpsc::Sender<()>,
-    pub done_rx: mpsc::Receiver<()>,
 }
 
 impl ImageRenderer {
-    pub fn new(client: reqwest::blocking::Client) -> Self {
-        let available = chafa_available();
+    pub fn new(client: reqwest::blocking::Client, picker: Picker) -> Self {
         let cache_dir = cache_dir();
-        if available {
-            let _ = std::fs::create_dir_all(&cache_dir);
-        }
-        let (done_tx, done_rx) = mpsc::channel();
+        let _ = std::fs::create_dir_all(&cache_dir);
         Self {
-            available,
+            picker,
             cache_dir,
-            current:   std::cell::Cell::new(None),
+            current:   None,
             client,
             failed:    Arc::new(Mutex::new(HashSet::new())),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
-            done_tx,
-            done_rx,
         }
     }
 
-    /// Render the game header image into the terminal at the given position.
-    /// `col` / `row`    : 1-based terminal cell of the top-left corner
-    /// `width` / `height` : size in terminal cells
+    /// Draw the game header image into `area`.
     ///
-    /// If the image isn't cached yet, kicks off a background fetch and returns
-    /// immediately (the worker sends `()` on `done_rx` when ready, prompting
-    /// the run loop to retry).
-    pub fn render(&self, app_id: u32, col: u16, row: u16, width: u16, height: u16) {
-        if !self.available || width == 0 || height == 0 {
+    /// If the image isn't cached yet, kicks off a background fetch and draws
+    /// nothing; a later frame picks the file up once it exists.
+    pub fn render(&mut self, f: &mut Frame, app_id: u32, area: Rect) {
+        if area.width == 0 || area.height == 0 {
             return;
         }
 
-        let path = self.cache_dir.join(format!("{}.jpg", app_id));
-        if !path.exists() {
-            if self.failed.lock().map(|f| f.contains(&app_id)).unwrap_or(false) {
+        if self.current.as_ref().map(|(id, _)| *id) != Some(app_id) {
+            self.current = None;
+            let path = self.cache_dir.join(format!("{}.jpg", app_id));
+            if !path.exists() {
+                if !self.failed.lock().map(|f| f.contains(&app_id)).unwrap_or(false) {
+                    self.spawn_fetch(app_id, path);
+                }
                 return;
             }
-            self.spawn_fetch(app_id, path);
-            return;
+            match image::open(&path) {
+                Ok(img) => self.current = Some((app_id, self.picker.new_resize_protocol(img))),
+                Err(_) => {
+                    // Corrupt cache entry: drop it so a later pass can refetch.
+                    let _ = std::fs::remove_file(&path);
+                    return;
+                }
+            }
         }
 
-        if self.current.get() == Some(app_id) {
-            return;
-        }
-
-        if render_chafa(&path, col, row, width, height) {
-            self.current.set(Some(app_id));
+        if let Some((_, protocol)) = self.current.as_mut() {
+            f.render_stateful_widget(StatefulImage::default(), area, protocol);
         }
     }
 
@@ -89,73 +78,19 @@ impl ImageRenderer {
         let client     = self.client.clone();
         let failed     = Arc::clone(&self.failed);
         let in_flight  = Arc::clone(&self.in_flight);
-        let done_tx    = self.done_tx.clone();
         std::thread::spawn(move || {
             let ok = fetch_header(&client, app_id, &dest).is_ok();
             if !ok {
                 if let Ok(mut f) = failed.lock() { f.insert(app_id); }
             }
             if let Ok(mut g) = in_flight.lock() { g.remove(&app_id); }
-            let _ = done_tx.send(());
         });
     }
-
-    /// Erase the image area by overwriting it with blank lines.
-    pub fn clear(&self) {
-        if !self.available { return; }
-        self.current.set(None);
-    }
-}
-
-// ─────────────────────────────────────────────
-// chafa rendering
-// ─────────────────────────────────────────────
-
-fn render_chafa(path: &Path, col: u16, row: u16, width: u16, height: u16) -> bool {
-    let Some(path_str) = path.to_str() else { return false; };
-
-    let output = Command::new("chafa")
-        .args([
-            "--size",    &format!("{}x{}", width, height),
-            "--align",   "left",
-            "--animate", "false",
-            "--stretch",
-            path_str,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-
-    let mut stdout = std::io::stdout().lock();
-    let text = String::from_utf8_lossy(&output.stdout);
-
-    for (i, line) in text.lines().enumerate() {
-        let _ = write!(stdout, "\x1b[{};{}H{}", row as usize + i, col, line);
-    }
-
-    let _ = write!(stdout, "\x1b[1;1H");
-    let _ = stdout.flush();
-    true
 }
 
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
-
-fn chafa_available() -> bool {
-    Command::new("chafa")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
 
 fn cache_dir() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
