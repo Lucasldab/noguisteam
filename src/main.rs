@@ -92,8 +92,14 @@ fn main() -> anyhow::Result<()> {
     let mut app  = App::new(&db, config.steamlib.clone())?;
 
     // Query the terminal's graphics protocol before raw mode / alt screen.
-    let picker = ratatui_image::picker::Picker::from_query_stdio()
-        .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
+    // A query nobody answers leaves ratatui-image's reader thread waiting on
+    // stdin: it eats the first key and switches the terminal out of raw mode.
+    let picker = if in_tmux_without_client() {
+        ratatui_image::picker::Picker::halfblocks()
+    } else {
+        ratatui_image::picker::Picker::from_query_stdio()
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
+    };
     let _ = io::Write::flush(&mut io::stdout());
     let mut renderer = ImageRenderer::new(http.clone(), picker);
 
@@ -521,6 +527,26 @@ fn sort_wishlist_entries(entries: &mut [app::WishlistEntry], sort: &WishlistSort
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
+/// Inside tmux the image query is passed through to the outer terminal; with
+/// no client attached (a detached session) there is none to answer it.
+fn in_tmux_without_client() -> bool {
+    let Some(pane) = std::env::var_os("TMUX_PANE").filter(|_| std::env::var_os("TMUX").is_some()) else {
+        return false;
+    };
+    std::process::Command::new("tmux")
+        .arg("display").arg("-p").arg("-t").arg(pane).arg("#{session_attached}")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| no_client_attached(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or(false)
+}
+
+/// `#{session_attached}` is the number of clients showing the session.
+fn no_client_attached(session_attached: &str) -> bool {
+    session_attached.trim() == "0"
+}
+
 fn xdg_config_path(file: &str) -> Option<PathBuf> {
     let base = std::env::var("XDG_CONFIG_HOME").ok()
         .map(PathBuf::from)
@@ -538,6 +564,14 @@ mod tests {
             discount_percent: pct, deal_tag: String::new(), store_low: None,
             historical_low: None, url: String::new(),
         }
+    }
+
+    #[test]
+    fn a_tmux_session_with_no_client_cannot_answer_the_image_query() {
+        assert!(no_client_attached("0\n"));
+        assert!(!no_client_attached("1\n"));
+        assert!(!no_client_attached("2"));
+        assert!(!no_client_attached(""), "unknown: query as before");
     }
 
     #[test]
