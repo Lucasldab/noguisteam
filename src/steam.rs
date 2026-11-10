@@ -245,13 +245,13 @@ fn is_steam_running() -> bool {
 }
 
 /// If Steam is running, ask it to shut down gracefully and relaunch silently.
-/// This makes the client re-scan `steamapps/` so a freshly installed game
+/// This makes the client re-scan `steamapps/` so an installed or removed game
 /// shows up in the library without the user restarting Steam manually.
 fn restart_steam_if_running(tx: &Sender<InstallMsg>) {
     if !is_steam_running() {
         return;
     }
-    let _ = tx.send(InstallMsg::Line("🔄 Restarting Steam to register new game…".to_string()));
+    let _ = tx.send(InstallMsg::Line("🔄 Restarting Steam so it sees the change…".to_string()));
     let env = running_client_env();
 
     let _ = Command::new("steam")
@@ -330,9 +330,8 @@ pub fn install_game(
 }
 
 pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database, tx: &Sender<InstallMsg>) -> Result<()> {
-    // Use steamcmd app_uninstall so the running Steam client is notified.
-    // Manually removing files works on disk but Steam keeps the game cached
-    // in memory and still allows launching until it restarts.
+    // steamcmd runs from its own folder, so the Steam client isn't told; it is
+    // restarted below, otherwise it keeps listing the game as installed.
     let mut args = login_args(config);
     args.extend(["+app_uninstall".into(), app_id.to_string(), "+quit".into()]);
 
@@ -346,14 +345,15 @@ pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database, tx: &Sen
         return Err(anyhow!("steamcmd app_uninstall exited with {status} — {LOGIN_HINT}"));
     }
 
-    // steamcmd removes the files and manifest itself.
-    // Belt-and-suspenders: remove manifest if it somehow still exists.
+    // steamcmd removed the files and its own copy of the manifest; the
+    // library's copy is what the client reads.
     let manifest = config.steamlib.join(format!("appmanifest_{}.acf", app_id));
     if manifest.exists() {
         std::fs::remove_file(&manifest)?;
     }
 
     db.mark_installed(app_id, false)?;
+    restart_steam_if_running(tx);
     Ok(())
 }
 
