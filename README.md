@@ -40,6 +40,8 @@ cargo install --locked --git https://github.com/Lucasldab/noguisteam
 3. Run `noguisteam login` once. SteamCMD asks for your password and Steam Guard code
    and caches the session; installs and uninstalls use it from then on.
    Your password is never stored or put on a command line.
+   SteamCMD runs from its own folder (`~/.local/share/noguisteam/steamcmd`) so the
+   Steam client cannot log it out; games still install into the client's library.
 
 Your Steam ID and login name are read from the local Steam client
 (`~/.steam/steam/config/loginusers.vdf`). Set `STEAM_ID` / `STEAM_USERNAME` in the
@@ -100,6 +102,7 @@ noguisteam login    # cache the steamcmd login (once, or when it expires)
 * `src/app.rs` — app state (tabs, selection, install state, wishlist)
 * `src/ui.rs` — ratatui rendering
 * `src/steam.rs` — SteamCMD + Steam Web API + ITAD integration
+* `src/steamcmd.rs` — SteamCMD's own Steam folder, sharing only the game files with the client
 * `src/db.rs` — SQLite cache
 * `src/cover.rs` — cover art download/cache + in-layout rendering via `ratatui-image`
 

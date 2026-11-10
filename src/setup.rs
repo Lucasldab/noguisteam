@@ -12,6 +12,8 @@ pub struct Paths {
     pub db:       PathBuf,
     /// Directory searched for `colors.json` before the XDG config dir.
     pub legacy:   Option<PathBuf>,
+    /// steamcmd's own Steam directory (see steamcmd.rs).
+    pub steamcmd_home: PathBuf,
 }
 
 impl Paths {
@@ -36,6 +38,7 @@ impl Paths {
             return Self {
                 env_file: root.join(".env"),
                 db:       root.join("steam_games.db"),
+                steamcmd_home: root.join("steamcmd"),
                 legacy:   Some(root),
             };
         }
@@ -45,6 +48,7 @@ impl Paths {
         Self {
             env_file: config.join("noguisteam").join("env"),
             db:       data.join("noguisteam").join("steam_games.db"),
+            steamcmd_home: data.join("noguisteam").join("steamcmd"),
             legacy:   None,
         }
     }
@@ -160,10 +164,10 @@ fn parse_loginusers(text: &str) -> Option<(String, String)> {
 /// `noguisteam login`: run steamcmd interactively once so it caches the
 /// session. steamcmd asks for the password and Steam Guard code itself, so
 /// the password is never stored or passed on a command line.
-pub fn login(steamcmd: &Path, username: &str) -> Result<()> {
+pub fn login(steamcmd: &Path, home: &crate::steamcmd::CmdHome, username: &str) -> Result<()> {
     println!("Logging in to steamcmd as {username}. It will ask for your password and Steam Guard code;");
     println!("after this, installs and uninstalls use the cached login.\n");
-    let status = std::process::Command::new(steamcmd)
+    let status = home.command(steamcmd)
         .args(["+login", username, "+quit"])
         .status()
         .with_context(|| format!("could not run {} — is steamcmd installed?", steamcmd.display()))?;
@@ -183,6 +187,7 @@ mod tests {
         let p = Paths::from_parts(None, None, None, Some("/home/u".into()));
         assert_eq!(p.env_file, PathBuf::from("/home/u/.config/noguisteam/env"));
         assert_eq!(p.db, PathBuf::from("/home/u/.local/share/noguisteam/steam_games.db"));
+        assert_eq!(p.steamcmd_home, PathBuf::from("/home/u/.local/share/noguisteam/steamcmd"));
         let p = Paths::from_parts(None, Some("/c".into()), Some("/d".into()), Some("/home/u".into()));
         assert_eq!(p.env_file, PathBuf::from("/c/noguisteam/env"));
         assert_eq!(p.db, PathBuf::from("/d/noguisteam/steam_games.db"));

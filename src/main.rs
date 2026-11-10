@@ -5,9 +5,10 @@ mod cover;
 mod db;
 mod setup;
 mod steam;
+mod steamcmd;
 mod ui;
 
-use app::{App, InstallState, Tab, WishlistEntry, WishlistSort};
+use app::{App, InstallMsg, InstallState, Tab, WishlistEntry, WishlistSort};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -59,12 +60,13 @@ fn main() -> anyhow::Result<()> {
         None => {}
         Some("login") => {
             let (steamcmd, username) = steam::login_target(&paths.env_file)?;
-            return setup::login(&steamcmd, &username);
+            let home = steam::cmd_home(&paths.steamcmd_home, &steam::client_steamapps())?;
+            return setup::login(&steamcmd, &home, &username);
         }
         Some(other) => anyhow::bail!("unknown command `{other}`\n\n{USAGE}"),
     }
 
-    let config = steam::SteamConfig::from_env(&paths.env_file)?;
+    let config = steam::SteamConfig::from_env(&paths.env_file, paths.steamcmd_home.clone())?;
     if let Some(dir) = paths.db.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -138,7 +140,7 @@ fn run(
     http:     &reqwest::blocking::Client,
 ) -> anyhow::Result<()> {
 
-    let (install_tx, install_rx)   = mpsc::channel::<String>();
+    let (install_tx, install_rx)   = mpsc::channel::<InstallMsg>();
     let (wishlist_tx, wishlist_rx) = mpsc::channel::<Result<Vec<WishlistEntry>, String>>();
     let (sync_tx, sync_rx)         = mpsc::channel::<Result<usize, String>>();
 
@@ -187,8 +189,8 @@ fn run(
 
     loop {
         // ── Drain install subprocess output ──
-        while let Ok(line) = install_rx.try_recv() {
-            if app.install_state.feed(line) {
+        while let Ok(msg) = install_rx.try_recv() {
+            if app.install_state.feed(msg) {
                 let _ = app.reload_games(db);
             }
         }
@@ -278,7 +280,7 @@ fn handle_library(
     app:              &mut App,
     db_path:          &Path,
     config:           &steam::SteamConfig,
-    install_tx:       mpsc::Sender<String>,
+    install_tx:       mpsc::Sender<InstallMsg>,
     sync_tx:          mpsc::Sender<Result<usize, String>>,
     http:             &reqwest::blocking::Client,
 ) {
@@ -312,6 +314,7 @@ fn handle_library(
                 let tx         = install_tx.clone();
                 let db_p       = db_path.to_path_buf();
                 let cfg_clone  = config.clone();
+                let name       = game.name.clone();
 
                 let mut startup = vec![format!("Starting install for {}…", game.name)];
                 if let Some(free) = steam::free_bytes_for(&config.steamlib) {
@@ -334,11 +337,12 @@ fn handle_library(
                 thread::spawn(move || {
                     let db2 = match Database::open(&db_p) {
                         Ok(d)  => d,
-                        Err(e) => { let _ = tx.send(format!("error: failed to open DB: {}", e)); return; }
+                        Err(e) => { let _ = tx.send(InstallMsg::Finished(Err(format!("failed to open DB: {e}")))); return; }
                     };
-                    if let Err(e) = steam::install_game(app_id, &cfg_clone, &db2, tx.clone()) {
-                        let _ = tx.send(format!("error: {}", e));
-                    }
+                    let result = steam::install_game(app_id, &cfg_clone, &db2, tx.clone())
+                        .map(|_| format!("{name} installed."))
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(InstallMsg::Finished(result));
                 });
             }
         }
@@ -362,11 +366,11 @@ fn handle_library(
                 thread::spawn(move || {
                     let db2 = match Database::open(&db_p) {
                         Ok(d)  => d,
-                        Err(e) => { let _ = tx.send(format!("error: failed to open DB: {}", e)); return; }
+                        Err(e) => { let _ = tx.send(InstallMsg::Finished(Err(format!("failed to open DB: {e}")))); return; }
                     };
                     match steam::uninstall_game(app_id, &cfg_clone, &db2) {
-                        Ok(_)  => { let _ = tx.send(format!("✅ {} uninstalled.", name)); }
-                        Err(e) => { let _ = tx.send(format!("error: {}", e)); }
+                        Ok(_)  => { let _ = tx.send(InstallMsg::Finished(Ok(format!("{name} uninstalled.")))); }
+                        Err(e) => { let _ = tx.send(InstallMsg::Finished(Err(e.to_string()))); }
                     }
                 });
             }

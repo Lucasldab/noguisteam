@@ -1,7 +1,8 @@
 // steam.rs — steamcmd subprocess, library sync, wishlist API
 
-use crate::app::WishlistEntry;
+use crate::app::{InstallMsg, WishlistEntry};
 use crate::db::Database;
+use crate::steamcmd::CmdHome;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ pub struct SteamConfig {
     pub country:   String,
     pub steamcmd:  PathBuf,
     pub steamlib:  PathBuf,
+    /// steamcmd's own Steam directory, apart from the client's.
+    pub steamcmd_home: PathBuf,
     pub auto_sync: bool,
 }
 
@@ -29,8 +32,7 @@ impl SteamConfig {
     /// Build from the environment (main() has already loaded the settings
     /// file). STEAM_ID and STEAM_USERNAME default to the account the local
     /// Steam client last logged in with. `settings` names the file in errors.
-    pub fn from_env(settings: &Path) -> Result<Self> {
-        let home = std::env::var("HOME").unwrap_or_default();
+    pub fn from_env(settings: &Path, steamcmd_home: PathBuf) -> Result<Self> {
         let var = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
         let local = crate::setup::local_steam_account();
         let missing = |what: &str| anyhow!(
@@ -49,13 +51,31 @@ impl SteamConfig {
             itad_key:    var("ITAD_KEY"),
             country:     var("COUNTRY").unwrap_or_else(|| "US".into()),
             steamcmd:    PathBuf::from(var("STEAMCMD").unwrap_or_else(|| "steamcmd".into())),
-            steamlib:    PathBuf::from(format!("{}/.steam/steam/steamapps", home)),
+            steamlib:    client_steamapps(),
+            steamcmd_home,
             auto_sync:   matches!(
                 std::env::var("AUTO_SYNC").unwrap_or_default().to_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
             ),
         })
     }
+}
+
+/// The Steam client's library, where games go and the client looks for them.
+pub fn client_steamapps() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(format!("{home}/.steam/steam/steamapps"))
+}
+
+/// steamcmd's own directory, laid out and ready to run. Shares the steamcmd
+/// binary the AUR wrapper already installed, if any, instead of a second copy.
+pub fn cmd_home(steamcmd_home: &Path, steamlib: &Path) -> Result<CmdHome> {
+    let home = CmdHome::new(steamcmd_home.to_path_buf());
+    let shared = std::env::var("HOME").ok()
+        .map(|h| PathBuf::from(h).join(".steam/steamcmd"))
+        .filter(|p| p.is_dir());
+    home.prepare(steamlib, shared.as_deref())?;
+    Ok(home)
 }
 
 /// What `noguisteam login` needs: the steamcmd binary and the login name
@@ -190,6 +210,29 @@ fn sanitize_line(input: &str) -> String {
     out.trim().to_string()
 }
 
+/// Settings people start Steam with from a shell alias or function (UI
+/// scaling). A relaunch without them comes back looking different.
+const CLIENT_ENV: &[&str] = &["STEAM_FORCE_DESKTOPUI_SCALING"];
+
+/// The `CLIENT_ENV` entries of a /proc/<pid>/environ; nothing else is read out.
+fn client_env(environ: &[u8]) -> Vec<(String, String)> {
+    environ.split(|b| *b == 0)
+        .filter_map(|kv| std::str::from_utf8(kv).ok()?.split_once('='))
+        .filter(|(k, _)| CLIENT_ENV.contains(k))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// The running Steam client's `CLIENT_ENV` settings, read before it shuts down.
+fn running_client_env() -> Vec<(String, String)> {
+    let Ok(out) = Command::new("pgrep").args(["-o", "-x", "steam"]).output() else { return vec![] };
+    let pid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if pid.is_empty() {
+        return vec![];
+    }
+    std::fs::read(format!("/proc/{pid}/environ")).map(|e| client_env(&e)).unwrap_or_default()
+}
+
 /// Returns true if a `steam` process is currently running on this machine.
 fn is_steam_running() -> bool {
     Command::new("pgrep")
@@ -204,11 +247,12 @@ fn is_steam_running() -> bool {
 /// If Steam is running, ask it to shut down gracefully and relaunch silently.
 /// This makes the client re-scan `steamapps/` so a freshly installed game
 /// shows up in the library without the user restarting Steam manually.
-fn restart_steam_if_running(tx: &Sender<String>) {
+fn restart_steam_if_running(tx: &Sender<InstallMsg>) {
     if !is_steam_running() {
         return;
     }
-    let _ = tx.send("🔄 Restarting Steam to register new game…".to_string());
+    let _ = tx.send(InstallMsg::Line("🔄 Restarting Steam to register new game…".to_string()));
+    let env = running_client_env();
 
     let _ = Command::new("steam")
         .arg("-shutdown")
@@ -222,8 +266,12 @@ fn restart_steam_if_running(tx: &Sender<String>) {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
+    // Its own process group, so quitting noguisteam or closing its terminal leaves Steam running.
+    use std::os::unix::process::CommandExt;
     let _ = Command::new("steam")
         .arg("-silent")
+        .envs(env)
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -237,12 +285,13 @@ pub fn install_game(
     app_id: u32,
     config: &SteamConfig,
     db: &Database,
-    tx: Sender<String>,
+    tx: Sender<InstallMsg>,
 ) -> Result<()> {
     let mut args = login_args(config);
     args.extend(["+app_update".into(), app_id.to_string(), "validate".into(), "+quit".into()]);
 
-    let mut child = Command::new(&config.steamcmd)
+    let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
+    let mut child = home.command(&config.steamcmd)
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -255,7 +304,7 @@ pub fn install_game(
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let cleaned = sanitize_line(&line);
             if !cleaned.is_empty() {
-                let _ = tx.send(cleaned);
+                let _ = tx.send(InstallMsg::Line(cleaned));
             }
         }
     }
@@ -265,12 +314,10 @@ pub fn install_game(
         return Err(anyhow!("steamcmd exited with {status} — {LOGIN_HINT}"));
     }
 
-    // Re-check manifest after install
-    let manifest = config.steamlib.join(format!("appmanifest_{}.acf", app_id));
-    if manifest.exists() {
+    // steamcmd wrote the manifest in its own directory; the client needs it in the library.
+    if home.adopt_manifest(app_id, &config.steamlib)? {
         db.mark_installed(app_id, true)?;
         restart_steam_if_running(&tx);
-        let _ = tx.send(format!("✅ {} installed successfully.", app_id));
     } else {
         return Err(anyhow!("Manifest not found after install — Steam may not have recognized the game."));
     }
@@ -285,7 +332,9 @@ pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database) -> Resul
     let mut args = login_args(config);
     args.extend(["+app_uninstall".into(), app_id.to_string(), "+quit".into()]);
 
-    let status = std::process::Command::new(&config.steamcmd)
+    let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
+    home.lend_manifest(app_id, &config.steamlib)?;
+    let status = home.command(&config.steamcmd)
         .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -636,8 +685,16 @@ mod tests {
         SteamConfig {
             api_key: "k".into(), steam_id: "1".into(), username: "me".into(),
             itad_key: None, country: "US".into(), steamcmd: "steamcmd".into(),
-            steamlib: PathBuf::from("/nonexistent"), auto_sync: false,
+            steamlib: PathBuf::from("/nonexistent"), steamcmd_home: PathBuf::from("/nonexistent"),
+            auto_sync: false,
         }
+    }
+
+    #[test]
+    fn relaunch_keeps_only_the_listed_client_settings() {
+        let environ = b"HOME=/home/u\0STEAM_FORCE_DESKTOPUI_SCALING=1.5\0STEAM_RUNTIME=1\0TOKEN=x=y\0";
+        assert_eq!(client_env(environ), [("STEAM_FORCE_DESKTOPUI_SCALING".to_string(), "1.5".to_string())]);
+        assert!(client_env(b"").is_empty());
     }
 
     #[test]
