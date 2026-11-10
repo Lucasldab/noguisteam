@@ -568,9 +568,9 @@ fn draw_install_popup(f: &mut Frame, app: &App, area: Rect) {
             output.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             accent(),
         ),
-        InstallState::Done { app_id, success } => (
+        InstallState::Done { app_id, success, output } => (
             format!(" AppID {} — {} ", app_id, if *success { "Done ✅" } else { "Failed ❌" }),
-            vec!["Press any key to close."],
+            output.iter().map(|s| s.as_str()).chain(["", "Press any key to close."]).collect(),
             if *success { ok() } else { err() },
         ),
         InstallState::Idle => return,

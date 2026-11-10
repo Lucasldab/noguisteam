@@ -187,29 +187,9 @@ fn run(
 
     loop {
         // ── Drain install subprocess output ──
-        const INSTALL_OUTPUT_CAP: usize = 200;
         while let Ok(line) = install_rx.try_recv() {
-            if let InstallState::Running { output, app_id } = &mut app.install_state {
-                if line.starts_with("✅") {
-                    let id = *app_id;
-                    app.install_state = InstallState::Done { app_id: id, success: true };
-                    let _ = app.reload_games(db);
-                } else if line.to_lowercase().contains("error") || line.to_lowercase().contains("failed") {
-                    let id = *app_id;
-                    app.install_state = InstallState::Done { app_id: id, success: false };
-                } else if line.contains("Waiting for confirmation") {
-                    // Replace repeated "Waiting for confirmation" with a single clear message
-                    if !output.iter().any(|l| l.contains("📱")) {
-                        output.push("📱 Approve Steam Guard in your mobile app…".to_string());
-                    }
-                } else {
-                    output.push(line);
-                    // Keep memory bounded on huge installs (50GB games emit thousands of lines).
-                    if output.len() > INSTALL_OUTPUT_CAP {
-                        let drop = output.len() - INSTALL_OUTPUT_CAP;
-                        output.drain(0..drop);
-                    }
-                }
+            if app.install_state.feed(line) {
+                let _ = app.reload_games(db);
             }
         }
 
