@@ -278,6 +278,26 @@ fn restart_steam_if_running(tx: &Sender<InstallMsg>) {
         .spawn();
 }
 
+/// Runs a steamcmd command with stdin closed, sending each cleaned stdout line
+/// to `tx` as it arrives, and returns its exit status.
+fn run_streaming(mut cmd: Command, tx: &Sender<InstallMsg>) -> std::io::Result<std::process::ExitStatus> {
+    use std::io::{BufRead, BufReader};
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .spawn()?;
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let cleaned = sanitize_line(&line);
+            if !cleaned.is_empty() {
+                let _ = tx.send(InstallMsg::Line(cleaned));
+            }
+        }
+    }
+    child.wait()
+}
+
 /// Runs steamcmd for install, sending each line of output to `tx` as it arrives.
 /// Uses the cached login; Steam Guard may still ask for confirmation in the
 /// mobile app (steamcmd waits for it).
@@ -291,25 +311,9 @@ pub fn install_game(
     args.extend(["+app_update".into(), app_id.to_string(), "validate".into(), "+quit".into()]);
 
     let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
-    let mut child = home.command(&config.steamcmd)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .spawn()
-        .with_context(|| launch_error(config))?;
-
-    if let Some(stdout) = child.stdout.take() {
-        use std::io::{BufRead, BufReader};
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let cleaned = sanitize_line(&line);
-            if !cleaned.is_empty() {
-                let _ = tx.send(InstallMsg::Line(cleaned));
-            }
-        }
-    }
-
-    let status = child.wait()?;
+    let mut cmd = home.command(&config.steamcmd);
+    cmd.args(&args);
+    let status = run_streaming(cmd, &tx).with_context(|| launch_error(config))?;
     if !status.success() {
         return Err(anyhow!("steamcmd exited with {status} — {LOGIN_HINT}"));
     }
@@ -325,7 +329,7 @@ pub fn install_game(
     Ok(())
 }
 
-pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database) -> Result<()> {
+pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database, tx: &Sender<InstallMsg>) -> Result<()> {
     // Use steamcmd app_uninstall so the running Steam client is notified.
     // Manually removing files works on disk but Steam keeps the game cached
     // in memory and still allows launching until it restarts.
@@ -334,13 +338,9 @@ pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database) -> Resul
 
     let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
     home.lend_manifest(app_id, &config.steamlib)?;
-    let status = home.command(&config.steamcmd)
-        .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .status()
-        .with_context(|| launch_error(config))?;
+    let mut cmd = home.command(&config.steamcmd);
+    cmd.args(&args);
+    let status = run_streaming(cmd, tx).with_context(|| launch_error(config))?;
 
     if !status.success() {
         return Err(anyhow!("steamcmd app_uninstall exited with {status} — {LOGIN_HINT}"));
@@ -695,6 +695,20 @@ mod tests {
         let environ = b"HOME=/home/u\0STEAM_FORCE_DESKTOPUI_SCALING=1.5\0STEAM_RUNTIME=1\0TOKEN=x=y\0";
         assert_eq!(client_env(environ), [("STEAM_FORCE_DESKTOPUI_SCALING".to_string(), "1.5".to_string())]);
         assert!(client_env(b"").is_empty());
+    }
+
+    #[test]
+    fn steamcmd_output_is_streamed_and_the_status_returned() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut c = Command::new("sh");
+        c.args(["-c", "echo 'Removing app'; echo; printf 'ERROR! no manifest\\r\\n'; exit 3"]);
+        let status = run_streaming(c, &tx).unwrap();
+        assert_eq!(status.code(), Some(3));
+        let lines: Vec<String> = rx.try_iter().map(|m| match m {
+            InstallMsg::Line(l) => l,
+            other => panic!("unexpected {other:?}"),
+        }).collect();
+        assert_eq!(lines, ["Removing app", "ERROR! no manifest"]);
     }
 
     #[test]

@@ -368,7 +368,7 @@ fn handle_library(
                         Ok(d)  => d,
                         Err(e) => { let _ = tx.send(InstallMsg::Finished(Err(format!("failed to open DB: {e}")))); return; }
                     };
-                    match steam::uninstall_game(app_id, &cfg_clone, &db2) {
+                    match steam::uninstall_game(app_id, &cfg_clone, &db2, &tx) {
                         Ok(_)  => { let _ = tx.send(InstallMsg::Finished(Ok(format!("{name} uninstalled.")))); }
                         Err(e) => { let _ = tx.send(InstallMsg::Finished(Err(e.to_string()))); }
                     }
