@@ -245,13 +245,16 @@ fn is_steam_running() -> bool {
 }
 
 /// If Steam is running, ask it to shut down gracefully and relaunch silently.
-/// This makes the client re-scan `steamapps/` so an installed or removed game
-/// shows up in the library without the user restarting Steam manually.
-fn restart_steam_if_running(tx: &Sender<InstallMsg>) {
+/// Needed after every steamcmd login, whatever its outcome: steamcmd logging
+/// in kicks the client off ("Session Replaced") and the client never logs back
+/// in by itself, so games launched afterwards run without achievements. The
+/// restart also makes the client re-scan `steamapps/`, so an installed or
+/// removed game shows up in the library. `say` reports progress to the user.
+pub fn restart_steam_if_running(say: &dyn Fn(&str)) {
     if !is_steam_running() {
         return;
     }
-    let _ = tx.send(InstallMsg::Line("🔄 Restarting Steam so it sees the change…".to_string()));
+    say("🔄 Restarting Steam so it logs back in and sees any change…");
     let env = running_client_env();
 
     let _ = Command::new("steam")
@@ -298,6 +301,11 @@ fn run_streaming(mut cmd: Command, tx: &Sender<InstallMsg>) -> std::io::Result<s
     child.wait()
 }
 
+/// Sends `line` to the install popup.
+fn popup(tx: &Sender<InstallMsg>) -> impl Fn(&str) + '_ {
+    move |line| { let _ = tx.send(InstallMsg::Line(line.to_string())); }
+}
+
 /// Runs steamcmd for install, sending each line of output to `tx` as it arrives.
 /// Uses the cached login; Steam Guard may still ask for confirmation in the
 /// mobile app (steamcmd waits for it).
@@ -307,36 +315,45 @@ pub fn install_game(
     db: &Database,
     tx: Sender<InstallMsg>,
 ) -> Result<()> {
+    let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
+    let result = install_with(&home, app_id, config, db, &tx);
+    restart_steam_if_running(&popup(&tx));
+    result
+}
+
+fn install_with(home: &CmdHome, app_id: u32, config: &SteamConfig, db: &Database, tx: &Sender<InstallMsg>) -> Result<()> {
     let mut args = login_args(config);
     args.extend(["+app_update".into(), app_id.to_string(), "validate".into(), "+quit".into()]);
 
-    let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
     let mut cmd = home.command(&config.steamcmd);
     cmd.args(&args);
-    let status = run_streaming(cmd, &tx).with_context(|| launch_error(config))?;
+    let status = run_streaming(cmd, tx).with_context(|| launch_error(config))?;
     if !status.success() {
         return Err(anyhow!("steamcmd exited with {status} — {LOGIN_HINT}"));
     }
 
     // steamcmd wrote the manifest in its own directory; the client needs it in the library.
-    if home.adopt_manifest(app_id, &config.steamlib)? {
-        db.mark_installed(app_id, true)?;
-        restart_steam_if_running(&tx);
-    } else {
+    if !home.adopt_manifest(app_id, &config.steamlib)? {
         return Err(anyhow!("Manifest not found after install — Steam may not have recognized the game."));
     }
-
+    db.mark_installed(app_id, true)?;
     Ok(())
 }
 
 pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database, tx: &Sender<InstallMsg>) -> Result<()> {
-    // steamcmd runs from its own folder, so the Steam client isn't told; it is
-    // restarted below, otherwise it keeps listing the game as installed.
+    let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
+    home.lend_manifest(app_id, &config.steamlib)?;
+    let result = uninstall_with(&home, app_id, config, db, tx);
+    // steamcmd runs from its own folder, so the client isn't told about the
+    // removal either; the restart makes it drop the game.
+    restart_steam_if_running(&popup(tx));
+    result
+}
+
+fn uninstall_with(home: &CmdHome, app_id: u32, config: &SteamConfig, db: &Database, tx: &Sender<InstallMsg>) -> Result<()> {
     let mut args = login_args(config);
     args.extend(["+app_uninstall".into(), app_id.to_string(), "+quit".into()]);
 
-    let home = cmd_home(&config.steamcmd_home, &config.steamlib)?;
-    home.lend_manifest(app_id, &config.steamlib)?;
     let mut cmd = home.command(&config.steamcmd);
     cmd.args(&args);
     let status = run_streaming(cmd, tx).with_context(|| launch_error(config))?;
@@ -353,7 +370,6 @@ pub fn uninstall_game(app_id: u32, config: &SteamConfig, db: &Database, tx: &Sen
     }
 
     db.mark_installed(app_id, false)?;
-    restart_steam_if_running(tx);
     Ok(())
 }
 

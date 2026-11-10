@@ -42,6 +42,9 @@ cargo install --locked --git https://github.com/Lucasldab/noguisteam
    Your password is never stored or put on a command line.
    SteamCMD runs from its own folder (`~/.local/share/noguisteam/steamcmd`) so the
    Steam client cannot log it out; games still install into the client's library.
+   Steam allows one session per account, so each SteamCMD login kicks the running
+   client offline; noguisteam restarts the client afterwards so it logs back in
+   (otherwise games run without achievements or cloud saves).
 
 Your Steam ID and login name are read from the local Steam client
 (`~/.steam/steam/config/loginusers.vdf`). Set `STEAM_ID` / `STEAM_USERNAME` in the

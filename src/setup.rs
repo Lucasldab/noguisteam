@@ -171,6 +171,8 @@ pub fn login(steamcmd: &Path, home: &crate::steamcmd::CmdHome, username: &str) -
         .args(["+login", username, "+quit"])
         .status()
         .with_context(|| format!("could not run {} — is steamcmd installed?", steamcmd.display()))?;
+    // The login kicked the Steam client off; bring it back either way.
+    crate::steam::restart_steam_if_running(&|line| println!("{line}"));
     if !status.success() {
         bail!("steamcmd exited with {status}");
     }
